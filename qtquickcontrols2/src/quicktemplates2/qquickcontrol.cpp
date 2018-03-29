@@ -52,7 +52,6 @@
 
 #include <QtGui/private/qguiapplication_p.h>
 #include <QtGui/qpa/qplatformtheme.h>
-#include <QtQml/private/qqmlincubator_p.h>
 
 #if QT_CONFIG(accessibility)
 #include <QtQuick/private/qquickaccessibleattached_p.h>
@@ -131,8 +130,7 @@ QQuickControlPrivate::QQuickControlPrivate()
       focusPolicy(Qt::NoFocus),
       focusReason(Qt::OtherFocusReason),
       background(nullptr),
-      contentItem(nullptr),
-      accessibleAttached(nullptr)
+      contentItem(nullptr)
 {
 #if QT_CONFIG(accessibility)
     QAccessible::installActivationObserver(this);
@@ -323,27 +321,11 @@ QAccessible::Role QQuickControlPrivate::accessibleRole() const
     return q->accessibleRole();
 }
 
-QAccessible::Role QQuickControl::accessibleRole() const
+QQuickAccessibleAttached *QQuickControlPrivate::accessibleAttached(const QObject *object)
 {
-    return QAccessible::NoRole;
-}
-
-void QQuickControl::accessibilityActiveChanged(bool active)
-{
-    Q_D(QQuickControl);
-    if (d->accessibleAttached || !active)
-        return;
-
-    d->accessibleAttached = qobject_cast<QQuickAccessibleAttached *>(qmlAttachedPropertiesObject<QQuickAccessibleAttached>(this, true));
-
-    // QQuickControl relies on the existence of a QQuickAccessibleAttached object.
-    // However, qmlAttachedPropertiesObject(create=true) creates an instance only
-    // for items that have been created by a QML engine. Therefore we create the
-    // object by hand for items created in C++ (QQuickPopupItem, for instance).
-    if (!d->accessibleAttached)
-        d->accessibleAttached = new QQuickAccessibleAttached(this);
-
-    d->accessibleAttached->setRole(accessibleRole());
+    if (!QAccessible::isActive())
+        return nullptr;
+    return QQuickAccessibleAttached::attachedProperties(object);
 }
 #endif
 
@@ -403,11 +385,11 @@ void QQuickControlPrivate::resolveFont()
     inheritFont(parentFont(q));
 }
 
-void QQuickControlPrivate::inheritFont(const QFont &f)
+void QQuickControlPrivate::inheritFont(const QFont &font)
 {
     Q_Q(QQuickControl);
-    QFont parentFont = extra.isAllocated() ? extra->font.resolve(f) : f;
-    parentFont.resolve(extra.isAllocated() ? extra->font.resolve() | f.resolve() : f.resolve());
+    QFont parentFont = extra.isAllocated() ? extra->requestedFont.resolve(font) : font;
+    parentFont.resolve(extra.isAllocated() ? extra->requestedFont.resolve() | font.resolve() : font.resolve());
 
     const QFont defaultFont = q->defaultFont();
     const QFont resolvedFont = parentFont.resolve(defaultFont);
@@ -420,35 +402,192 @@ void QQuickControlPrivate::inheritFont(const QFont &f)
 
     Assign \a font to this control, and propagate it to all children.
 */
-void QQuickControlPrivate::updateFont(const QFont &f)
+void QQuickControlPrivate::updateFont(const QFont &font)
 {
     Q_Q(QQuickControl);
-    QFont old = resolvedFont;
-    resolvedFont = f;
+    QFont oldFont = resolvedFont;
+    resolvedFont = font;
 
-    if (old != f)
-        q->fontChange(f, old);
+    if (oldFont != font)
+        q->fontChange(font, oldFont);
 
-    QQuickControlPrivate::updateFontRecur(q, f);
+    QQuickControlPrivate::updateFontRecur(q, font);
 
-    if (old != f)
+    if (oldFont != font)
         emit q->fontChanged();
 }
 
-void QQuickControlPrivate::updateFontRecur(QQuickItem *item, const QFont &f)
+void QQuickControlPrivate::updateFontRecur(QQuickItem *item, const QFont &font)
 {
     const auto childItems = item->childItems();
     for (QQuickItem *child : childItems) {
         if (QQuickControl *control = qobject_cast<QQuickControl *>(child))
-            QQuickControlPrivate::get(control)->inheritFont(f);
+            QQuickControlPrivate::get(control)->inheritFont(font);
         else if (QQuickLabel *label = qobject_cast<QQuickLabel *>(child))
-            QQuickLabelPrivate::get(label)->inheritFont(f);
+            QQuickLabelPrivate::get(label)->inheritFont(font);
         else if (QQuickTextArea *textArea = qobject_cast<QQuickTextArea *>(child))
-            QQuickTextAreaPrivate::get(textArea)->inheritFont(f);
+            QQuickTextAreaPrivate::get(textArea)->inheritFont(font);
         else if (QQuickTextField *textField = qobject_cast<QQuickTextField *>(child))
-            QQuickTextFieldPrivate::get(textField)->inheritFont(f);
+            QQuickTextFieldPrivate::get(textField)->inheritFont(font);
         else
-            QQuickControlPrivate::updateFontRecur(child, f);
+            QQuickControlPrivate::updateFontRecur(child, font);
+    }
+}
+
+/*!
+    \internal
+
+    Returns the palette that the item inherits from its ancestors and
+    QGuiApplication::palette.
+*/
+QPalette QQuickControlPrivate::parentPalette(const QQuickItem *item)
+{
+    QQuickItem *p = item->parentItem();
+    while (p) {
+        if (QQuickControl *control = qobject_cast<QQuickControl *>(p))
+            return control->palette();
+        else if (QQuickLabel *label = qobject_cast<QQuickLabel *>(p))
+            return label->palette();
+        else if (QQuickTextField *textField = qobject_cast<QQuickTextField *>(p))
+            return textField->palette();
+        else if (QQuickTextArea *textArea = qobject_cast<QQuickTextArea *>(p))
+            return textArea->palette();
+
+        p = p->parentItem();
+    }
+
+    if (QQuickApplicationWindow *window = qobject_cast<QQuickApplicationWindow *>(item->window()))
+        return window->palette();
+
+    return themePalette(QPlatformTheme::SystemPalette);
+}
+
+QPalette QQuickControlPrivate::themePalette(QPlatformTheme::Palette type)
+{
+    if (QPlatformTheme *theme = QGuiApplicationPrivate::platformTheme()) {
+        if (const QPalette *palette = theme->palette(type)) {
+            QPalette p = *palette;
+            if (type == QPlatformTheme::SystemPalette)
+                p.resolve(0);
+            return p;
+        }
+    }
+
+    return QPalette();
+}
+
+/*!
+    \internal
+
+    Determine which palette is implicitly imposed on this control by its ancestors
+    and QGuiApplication::palette, resolve this against its own palette (attributes from
+    the implicit palette are copied over). Then propagate this palette to this
+    control's children.
+*/
+void QQuickControlPrivate::resolvePalette()
+{
+    Q_Q(QQuickControl);
+    inheritPalette(parentPalette(q));
+}
+
+void QQuickControlPrivate::inheritPalette(const QPalette &palette)
+{
+    Q_Q(QQuickControl);
+    QPalette parentPalette = extra.isAllocated() ? extra->requestedPalette.resolve(palette) : palette;
+    parentPalette.resolve(extra.isAllocated() ? extra->requestedPalette.resolve() | palette.resolve() : palette.resolve());
+
+    const QPalette defaultPalette = q->defaultPalette();
+    const QPalette resolvedPalette = parentPalette.resolve(defaultPalette);
+
+    setPalette_helper(resolvedPalette);
+}
+
+/*!
+    \internal
+
+    Assign \a palette to this control, and propagate it to all children.
+*/
+void QQuickControlPrivate::updatePalette(const QPalette &palette)
+{
+    Q_Q(QQuickControl);
+    QPalette oldPalette = resolvedPalette;
+    resolvedPalette = palette;
+
+    if (oldPalette != palette)
+        q->paletteChange(palette, oldPalette);
+
+    QQuickControlPrivate::updatePaletteRecur(q, palette);
+
+    if (oldPalette != palette)
+        emit q->paletteChanged();
+}
+
+void QQuickControlPrivate::updatePaletteRecur(QQuickItem *item, const QPalette &palette)
+{
+    const auto childItems = item->childItems();
+    for (QQuickItem *child : childItems) {
+        if (QQuickControl *control = qobject_cast<QQuickControl *>(child))
+            QQuickControlPrivate::get(control)->inheritPalette(palette);
+        else if (QQuickLabel *label = qobject_cast<QQuickLabel *>(child))
+            QQuickLabelPrivate::get(label)->inheritPalette(palette);
+        else if (QQuickTextArea *textArea = qobject_cast<QQuickTextArea *>(child))
+            QQuickTextAreaPrivate::get(textArea)->inheritPalette(palette);
+        else if (QQuickTextField *textField = qobject_cast<QQuickTextField *>(child))
+            QQuickTextFieldPrivate::get(textField)->inheritPalette(palette);
+        else
+            QQuickControlPrivate::updatePaletteRecur(child, palette);
+    }
+}
+
+QLocale QQuickControlPrivate::calcLocale(const QQuickItem *item)
+{
+    const QQuickItem *p = item;
+    while (p) {
+        if (const QQuickControl *control = qobject_cast<const QQuickControl *>(p))
+            return control->locale();
+
+        QVariant v = p->property("locale");
+        if (v.isValid() && v.userType() == QMetaType::QLocale)
+            return v.toLocale();
+
+        p = p->parentItem();
+    }
+
+    if (item) {
+        if (QQuickApplicationWindow *window = qobject_cast<QQuickApplicationWindow *>(item->window()))
+            return window->locale();
+    }
+
+    return QLocale();
+}
+
+void QQuickControlPrivate::updateLocale(const QLocale &l, bool e)
+{
+    Q_Q(QQuickControl);
+    if (!e && hasLocale)
+        return;
+
+    QLocale old = q->locale();
+    hasLocale = e;
+    if (old != l) {
+        bool wasMirrored = q->isMirrored();
+        q->localeChange(l, old);
+        locale = l;
+        QQuickControlPrivate::updateLocaleRecur(q, l);
+        emit q->localeChanged();
+        if (wasMirrored != q->isMirrored())
+            q->mirrorChange();
+    }
+}
+
+void QQuickControlPrivate::updateLocaleRecur(QQuickItem *item, const QLocale &l)
+{
+    const auto childItems = item->childItems();
+    for (QQuickItem *child : childItems) {
+        if (QQuickControl *control = qobject_cast<QQuickControl *>(child))
+            QQuickControlPrivate::get(control)->updateLocale(l, false);
+        else
+            updateLocaleRecur(child, l);
     }
 }
 
@@ -510,48 +649,44 @@ bool QQuickControlPrivate::calcHoverEnabled(const QQuickItem *item)
 }
 #endif
 
-QString QQuickControl::accessibleName() const
+static inline QString contentItemName() { return QStringLiteral("contentItem"); }
+
+void QQuickControlPrivate::cancelContentItem()
 {
-#if QT_CONFIG(accessibility)
-    Q_D(const QQuickControl);
-    if (d->accessibleAttached)
-        return d->accessibleAttached->name();
-#endif
-    return QString();
+    Q_Q(QQuickControl);
+    quickCancelDeferred(q, contentItemName());
 }
 
-void QQuickControl::setAccessibleName(const QString &name)
+void QQuickControlPrivate::executeContentItem(bool complete)
 {
-#if QT_CONFIG(accessibility)
-    Q_D(QQuickControl);
-    if (d->accessibleAttached)
-        d->accessibleAttached->setName(name);
-#else
-    Q_UNUSED(name)
-#endif
+    Q_Q(QQuickControl);
+    if (contentItem.wasExecuted())
+        return;
+
+    if (!contentItem || complete)
+        quickBeginDeferred(q, contentItemName(), contentItem);
+    if (complete)
+        quickCompleteDeferred(q, contentItemName(), contentItem);
 }
 
-QVariant QQuickControl::accessibleProperty(const char *propertyName)
+static inline QString backgroundName() { return QStringLiteral("background"); }
+
+void QQuickControlPrivate::cancelBackground()
 {
-#if QT_CONFIG(accessibility)
-    Q_D(QQuickControl);
-    if (d->accessibleAttached)
-        return QQuickAccessibleAttached::property(this, propertyName);
-#endif
-    Q_UNUSED(propertyName)
-    return QVariant();
+    Q_Q(QQuickControl);
+    quickCancelDeferred(q, backgroundName());
 }
 
-bool QQuickControl::setAccessibleProperty(const char *propertyName, const QVariant &value)
+void QQuickControlPrivate::executeBackground(bool complete)
 {
-#if QT_CONFIG(accessibility)
-    Q_D(QQuickControl);
-    if (d->accessibleAttached)
-        return QQuickAccessibleAttached::setProperty(this, propertyName, value);
-#endif
-    Q_UNUSED(propertyName)
-    Q_UNUSED(value)
-    return false;
+    Q_Q(QQuickControl);
+    if (background.wasExecuted())
+        return;
+
+    if (!background || complete)
+        quickBeginDeferred(q, backgroundName(), background);
+    if (complete)
+        quickCompleteDeferred(q, backgroundName(), background);
 }
 
 QQuickControl::QQuickControl(QQuickItem *parent)
@@ -569,6 +704,9 @@ void QQuickControl::itemChange(QQuickItem::ItemChange change, const QQuickItem::
     Q_D(QQuickControl);
     QQuickItem::itemChange(change, value);
     switch (change) {
+    case ItemEnabledHasChanged:
+        emit paletteChanged();
+        break;
     case ItemVisibleHasChanged:
 #if QT_CONFIG(quicktemplates2_hover)
         if (!value.boolValue)
@@ -579,6 +717,7 @@ void QQuickControl::itemChange(QQuickItem::ItemChange change, const QQuickItem::
     case ItemParentHasChanged:
         if ((change == ItemParentHasChanged && value.item) || (change == ItemSceneChange && value.window)) {
             d->resolveFont();
+            d->resolvePalette();
             if (!d->hasLocale)
                 d->updateLocale(QQuickControlPrivate::calcLocale(d->parentItem), false); // explicit=false
 #if QT_CONFIG(quicktemplates2_hover)
@@ -608,9 +747,14 @@ void QQuickControl::itemChange(QQuickItem::ItemChange change, const QQuickItem::
 
     The default font depends on the system environment. ApplicationWindow maintains a system/theme
     font which serves as a default for all controls. There may also be special font defaults for
-    certain types of controls. You can also set the default font for controls by passing a custom
-    font to QGuiApplication::setFont(), before loading the QML. Finally, the font is matched
-    against Qt's font database to find the best match.
+    certain types of controls. You can also set the default font for controls by either:
+
+    \list
+    \li passing a custom font to QGuiApplication::setFont(), before loading the QML; or
+    \li specifying the fonts in the \l {Qt Quick Controls 2 Configuration File}{qtquickcontrols2.conf file}.
+    \endlist
+
+    Finally, the font is matched against Qt's font database to find the best match.
 
     Control propagates explicit font properties from parent to children. If you change a specific
     property on a control's font, that property propagates to all of the control's children,
@@ -631,6 +775,9 @@ void QQuickControl::itemChange(QQuickItem::ItemChange change, const QQuickItem::
         }
     }
     \endcode
+
+    For the full list of available font properties, see the
+    \l [QtQuick]{font}{font QML Basic Type} documentation.
 */
 QFont QQuickControl::font() const
 {
@@ -641,10 +788,10 @@ QFont QQuickControl::font() const
 void QQuickControl::setFont(const QFont &font)
 {
     Q_D(QQuickControl);
-    if (d->extra.value().font.resolve() == font.resolve() && d->extra.value().font == font)
+    if (d->extra.value().requestedFont.resolve() == font.resolve() && d->extra.value().requestedFont == font)
         return;
 
-    d->extra.value().font = font;
+    d->extra.value().requestedFont = font;
     d->resolveFont();
 }
 
@@ -915,120 +1062,6 @@ void QQuickControl::resetLocale()
 
     d->hasLocale = false;
     d->updateLocale(QQuickControlPrivate::calcLocale(d->parentItem), false); // explicit=false
-}
-
-QLocale QQuickControlPrivate::calcLocale(const QQuickItem *item)
-{
-    const QQuickItem *p = item;
-    while (p) {
-        if (const QQuickControl *control = qobject_cast<const QQuickControl *>(p))
-            return control->locale();
-
-        QVariant v = p->property("locale");
-        if (v.isValid() && v.userType() == QMetaType::QLocale)
-            return v.toLocale();
-
-        p = p->parentItem();
-    }
-
-    if (item) {
-        if (QQuickApplicationWindow *window = qobject_cast<QQuickApplicationWindow *>(item->window()))
-            return window->locale();
-    }
-
-    return QLocale();
-}
-
-static inline QString contentItemName() { return QStringLiteral("contentItem"); }
-
-void QQuickControlPrivate::cancelContentItem()
-{
-    Q_Q(QQuickControl);
-    quickCancelDeferred(q, contentItemName());
-}
-
-void QQuickControlPrivate::executeContentItem(bool complete)
-{
-    Q_Q(QQuickControl);
-    if (contentItem.wasExecuted())
-        return;
-
-    if (!contentItem || complete)
-        quickBeginDeferred(q, contentItemName(), contentItem);
-    if (complete)
-        quickCompleteDeferred(q, contentItemName(), contentItem);
-}
-
-static inline QString backgroundName() { return QStringLiteral("background"); }
-
-void QQuickControlPrivate::cancelBackground()
-{
-    Q_Q(QQuickControl);
-    quickCancelDeferred(q, backgroundName());
-}
-
-void QQuickControlPrivate::executeBackground(bool complete)
-{
-    Q_Q(QQuickControl);
-    if (background.wasExecuted())
-        return;
-
-    if (!background || complete)
-        quickBeginDeferred(q, backgroundName(), background);
-    if (complete)
-        quickCompleteDeferred(q, backgroundName(), background);
-}
-
-/*
-    Cancels incubation recursively to avoid "Object destroyed during incubation" (QTBUG-50992)
-*/
-static void cancelIncubation(QObject *object, QQmlContext *context)
-{
-    const auto children = object->children();
-    for (QObject *child : children)
-        cancelIncubation(child, context);
-    QQmlIncubatorPrivate::cancel(object, context);
-}
-
-void QQuickControlPrivate::destroyDelegate(QObject *delegate, QObject *parent)
-{
-    if (!delegate)
-        return;
-
-    QQmlContext *context = parent ? qmlContext(parent) : nullptr;
-    if (context)
-        cancelIncubation(delegate, context);
-    delete delegate;
-}
-
-void QQuickControlPrivate::updateLocale(const QLocale &l, bool e)
-{
-    Q_Q(QQuickControl);
-    if (!e && hasLocale)
-        return;
-
-    QLocale old = q->locale();
-    hasLocale = e;
-    if (old != l) {
-        bool wasMirrored = q->isMirrored();
-        q->localeChange(l, old);
-        locale = l;
-        QQuickControlPrivate::updateLocaleRecur(q, l);
-        emit q->localeChanged();
-        if (wasMirrored != q->isMirrored())
-            q->mirrorChange();
-    }
-}
-
-void QQuickControlPrivate::updateLocaleRecur(QQuickItem *item, const QLocale &l)
-{
-    const auto childItems = item->childItems();
-    for (QQuickItem *child : childItems) {
-        if (QQuickControl *control = qobject_cast<QQuickControl *>(child))
-            QQuickControlPrivate::get(control)->updateLocale(l, false);
-        else
-            updateLocaleRecur(child, l);
-    }
 }
 
 /*!
@@ -1330,11 +1363,81 @@ void QQuickControl::setContentItem(QQuickItem *item)
     d->setContentItem_helper(item, true);
 }
 
+/*!
+    \since QtQuick.Controls 2.3 (Qt 5.10)
+    \qmlproperty palette QtQuick.Controls::Control::palette
+
+    This property holds the palette currently set for the control.
+
+    This property describes the control's requested palette. The palette is used by the control's
+    style when rendering standard components, and is available as a means to ensure that custom
+    controls can maintain consistency with the native platform's native look and feel. It's common
+    that different platforms, or different styles, define different palettes for an application.
+
+    The default palette depends on the system environment. ApplicationWindow maintains a system/theme
+    palette which serves as a default for all controls. There may also be special palette defaults for
+    certain types of controls. You can also set the default palette for controls by either:
+
+    \list
+    \li passing a custom palette to QGuiApplication::setPalette(), before loading any QML; or
+    \li specifying the colors in the \l {Qt Quick Controls 2 Configuration File}{qtquickcontrols2.conf file}.
+    \endlist
+
+    Control propagates explicit palette properties from parent to children. If you change a specific
+    property on a control's palette, that property propagates to all of the control's children,
+    overriding any system defaults for that property.
+
+    \code
+    Page {
+        palette.text: "red"
+
+        Column {
+            Label {
+                text: qsTr("This will use red color...")
+            }
+
+            Switch {
+                text: qsTr("... and so will this")
+            }
+        }
+    }
+    \endcode
+
+    For the full list of available palette colors, see the
+    \l {qtquickcontrols2-palette}{palette QML Basic Type} documentation.
+
+    \sa ApplicationWindow::palette, Popup::palette
+*/
+QPalette QQuickControl::palette() const
+{
+    Q_D(const QQuickControl);
+    QPalette palette = d->resolvedPalette;
+    if (!isEnabled())
+        palette.setCurrentColorGroup(QPalette::Disabled);
+    return palette;
+}
+
+void QQuickControl::setPalette(const QPalette &palette)
+{
+    Q_D(QQuickControl);
+    if (d->extra.value().requestedPalette.resolve() == palette.resolve() && d->extra.value().requestedPalette == palette)
+        return;
+
+    d->extra.value().requestedPalette = palette;
+    d->resolvePalette();
+}
+
+void QQuickControl::resetPalette()
+{
+    setPalette(QPalette());
+}
+
 void QQuickControl::classBegin()
 {
     Q_D(QQuickControl);
     QQuickItem::classBegin();
     d->resolveFont();
+    d->resolvePalette();
 }
 
 void QQuickControl::componentComplete()
@@ -1343,6 +1446,7 @@ void QQuickControl::componentComplete()
     d->executeBackground(true);
     d->executeContentItem(true);
     QQuickItem::componentComplete();
+    d->resizeBackground();
     d->resizeContent();
     if (!d->hasLocale)
         d->locale = QQuickControlPrivate::calcLocale(d->parentItem);
@@ -1351,7 +1455,7 @@ void QQuickControl::componentComplete()
         setAcceptHoverEvents(QQuickControlPrivate::calcHoverEnabled(d->parentItem));
 #endif
 #if QT_CONFIG(accessibility)
-    if (!d->accessibleAttached && QAccessible::isActive())
+    if (QAccessible::isActive())
         accessibilityActiveChanged(true);
 #endif
 }
@@ -1359,6 +1463,11 @@ void QQuickControl::componentComplete()
 QFont QQuickControl::defaultFont() const
 {
     return QQuickControlPrivate::themeFont(QPlatformTheme::SystemFont);
+}
+
+QPalette QQuickControl::defaultPalette() const
+{
+    return QQuickControlPrivate::themePalette(QPlatformTheme::SystemPalette);
 }
 
 void QQuickControl::focusInEvent(QFocusEvent *event)
@@ -1532,6 +1641,69 @@ void QQuickControl::localeChange(const QLocale &newLocale, const QLocale &oldLoc
 {
     Q_UNUSED(newLocale);
     Q_UNUSED(oldLocale);
+}
+
+void QQuickControl::paletteChange(const QPalette &newPalette, const QPalette &oldPalette)
+{
+    Q_UNUSED(newPalette);
+    Q_UNUSED(oldPalette);
+}
+
+#if QT_CONFIG(accessibility)
+QAccessible::Role QQuickControl::accessibleRole() const
+{
+    return QAccessible::NoRole;
+}
+
+void QQuickControl::accessibilityActiveChanged(bool active)
+{
+    if (!active)
+        return;
+
+    QQuickAccessibleAttached *accessibleAttached = qobject_cast<QQuickAccessibleAttached *>(qmlAttachedPropertiesObject<QQuickAccessibleAttached>(this, true));
+    Q_ASSERT(accessibleAttached);
+    accessibleAttached->setRole(accessibleRole());
+}
+#endif
+
+QString QQuickControl::accessibleName() const
+{
+#if QT_CONFIG(accessibility)
+    if (QQuickAccessibleAttached *accessibleAttached = QQuickControlPrivate::accessibleAttached(this))
+        return accessibleAttached->name();
+#endif
+    return QString();
+}
+
+void QQuickControl::setAccessibleName(const QString &name)
+{
+#if QT_CONFIG(accessibility)
+    if (QQuickAccessibleAttached *accessibleAttached = QQuickControlPrivate::accessibleAttached(this))
+        accessibleAttached->setName(name);
+#else
+    Q_UNUSED(name)
+#endif
+}
+
+QVariant QQuickControl::accessibleProperty(const char *propertyName)
+{
+#if QT_CONFIG(accessibility)
+    if (QAccessible::isActive())
+        return QQuickAccessibleAttached::property(this, propertyName);
+#endif
+    Q_UNUSED(propertyName)
+    return QVariant();
+}
+
+bool QQuickControl::setAccessibleProperty(const char *propertyName, const QVariant &value)
+{
+#if QT_CONFIG(accessibility)
+    if (QAccessible::isActive())
+        return QQuickAccessibleAttached::setProperty(this, propertyName, value);
+#endif
+    Q_UNUSED(propertyName)
+    Q_UNUSED(value)
+    return false;
 }
 
 QT_END_NAMESPACE

@@ -72,7 +72,9 @@ static const ControlInfo ControlInfos[] = {
     { "ItemDelegate", QStringList() << "background" << "contentItem" },
     { "Label", QStringList() << "background" },
     { "Menu", QStringList() << "background" << "contentItem" },
-    { "MenuItem", QStringList() << "background" << "contentItem" << "indicator" },
+    { "MenuBar", QStringList() << "background" << "contentItem" },
+    { "MenuBarItem", QStringList() << "background" << "contentItem" },
+    { "MenuItem", QStringList() << "arrow" << "background" << "contentItem" << "indicator" },
     { "MenuSeparator", QStringList() << "background" << "contentItem" },
     { "Page", QStringList() << "background" << "contentItem" },
     { "PageIndicator", QStringList() << "background" << "contentItem" },
@@ -101,7 +103,7 @@ static const ControlInfo ControlInfos[] = {
     { "ToolButton", QStringList() << "background" << "contentItem" },
     { "ToolSeparator", QStringList() << "background" << "contentItem" },
     { "ToolTip", QStringList() << "background" << "contentItem" },
-    // { "Tumbler", QStringList() << "background" << "contentItem" } ### TODO: fix and enable deferred execution
+    { "Tumbler", QStringList() << "background" << "contentItem" }
 };
 
 class tst_customization : public QQmlDataTest
@@ -251,7 +253,7 @@ void tst_customization::reset()
 QObject* tst_customization::createControl(const QString &name, const QString &qml, QString *error)
 {
     QQmlComponent component(engine);
-    component.setData("import QtQuick 2.9; import QtQuick.Window 2.2; import QtQuick.Controls 2.2; " + name.toUtf8() + " { " + qml.toUtf8() + " }", QUrl());
+    component.setData("import QtQuick 2.10; import QtQuick.Window 2.2; import QtQuick.Controls 2.3; " + name.toUtf8() + " { " + qml.toUtf8() + " }", QUrl());
     QObject *obj = component.create();
     if (!obj)
         *error = component.errorString();
@@ -355,12 +357,16 @@ void tst_customization::override_data()
     for (const ControlInfo &control : ControlInfos)
         QTest::newRow(qPrintable("overidentified:" + control.type)) << "identified" << control.type << control.delegates << "identified" << true;
 
+#ifndef Q_OS_MACOS // QTBUG-65671
+
     // test that the built-in styles don't have undesired IDs in their delegates
-    const QStringList styles = QStringList() << "Default" << "Material" << "Universal"; // ### TODO: QQuickStyle::availableStyles();
+    const QStringList styles = QStringList() << "Default" << "Fusion" << "Material" << "Universal"; // ### TODO: QQuickStyle::availableStyles();
     for (const QString &style : styles) {
         for (const ControlInfo &control : ControlInfos)
             QTest::newRow(qPrintable(style + ":" + control.type)) << style << control.type << control.delegates << "" << false;
     }
+
+#endif
 }
 
 void tst_customization::override()
@@ -480,6 +486,20 @@ void tst_customization::comboPopup()
 
         QTest::mouseClick(&window, Qt::LeftButton, Qt::NoModifier, QPoint(1, 1));
         QVERIFY(qt_createdQObjects()->contains("combobox-popup-simple"));
+    }
+
+    reset();
+
+    {
+        // test that ComboBox::popup is completed upon component completion (if appropriate)
+        QQmlComponent component(engine);
+        component.setData("import QtQuick 2.9; import QtQuick.Controls 2.2; ComboBox { id: control; contentItem: Item { visible: !control.popup.visible } popup: Popup { property bool wasCompleted: false; Component.onCompleted: wasCompleted = true } }", QUrl());
+        QScopedPointer<QQuickItem> comboBox(qobject_cast<QQuickItem *>(component.create()));
+        QVERIFY(comboBox);
+
+        QObject *popup = comboBox->property("popup").value<QObject *>();
+        QVERIFY(popup);
+        QCOMPARE(popup->property("wasCompleted"), QVariant(true));
     }
 }
 

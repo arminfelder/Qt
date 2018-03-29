@@ -73,6 +73,8 @@ public:
     static QSharedPointer<BrowserContextAdapter> defaultContext();
     static QObject* globalQObjectRoot();
 
+    void shutdown();
+
     VisitedLinksManagerQt *visitedLinksManager();
     DownloadManagerDelegateQt *downloadManagerDelegate();
 
@@ -86,6 +88,8 @@ public:
     void removeClient(BrowserContextAdapterClient *adapterClient);
 
     void cancelDownload(quint32 downloadId);
+    void pauseDownload(quint32 downloadId);
+    void resumeDownload(quint32 downloadId);
 
     BrowserContextQt *browserContext();
 

@@ -2,7 +2,44 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
+var mobileNav = false;
+
+var showDetails = false;
+
+/**
+ * For small screen mobile the navigation buttons are moved
+ * below the advanced text.
+ */
+function onResize() {
+  var mediaQuery = '(min-width: 240px) and (max-width: 420px) and ' +
+      '(max-height: 736px) and (min-height: 401px) and ' +
+      '(orientation: portrait), (max-width: 736px) and ' +
+      '(max-height: 420px) and (min-height: 240px) and ' +
+      '(min-width: 421px) and (orientation: landscape)';
+
+  // Check for change in nav status.
+  if (mobileNav != window.matchMedia(mediaQuery).matches) {
+    mobileNav = !mobileNav;
+    updateDetails();
+  }
+}
+
+function updateDetails() {
+  $('information-container').hidden = mobileNav && showDetails;
+  $('details').hidden = !showDetails;
+}
+
+function setupMobileNav() {
+  window.addEventListener('resize', onResize);
+  onResize();
+}
+
+document.addEventListener('DOMContentLoaded', setupMobileNav);
+
 function sendCommand(cmd) {
+  // TODO(bauerb): domAutomationController is not defined when this page is
+  // shown in chrome://interstitials. Use a MessageHandler or something to
+  // support interactions.
   window.domAutomationController.setAutomationId(1);
   window.domAutomationController.send(cmd);
 }
@@ -12,14 +49,11 @@ function makeImageSet(url1x, url2x) {
 }
 
 function initialize() {
-  if (loadTimeData.getBoolean('allowAccessRequests')) {
+  var allowAccessRequests = loadTimeData.getBoolean('allowAccessRequests');
+  if (allowAccessRequests) {
     $('request-access-button').onclick = function(event) {
       $('request-access-button').hidden = true;
-      if (window.domAutomationController) {
-        sendCommand('request');
-      } else {
-        window.webRestrictions.requestPermission(setRequestStatus);
-      }
+      sendCommand('request');
     };
   } else {
     $('request-access-button').hidden = true;
@@ -27,7 +61,7 @@ function initialize() {
   var avatarURL1x = loadTimeData.getString('avatarURL1x');
   var avatarURL2x = loadTimeData.getString('avatarURL2x');
   var custodianName = loadTimeData.getString('custodianName');
-  if (custodianName) {
+  if (custodianName && allowAccessRequests) {
     $('custodians-information').hidden = false;
     if (avatarURL1x) {
       $('custodian-avatar-img').style.content =
@@ -50,33 +84,28 @@ function initialize() {
           'secondCustodianEmail');
     }
   }
-  var showDetailsLink = loadTimeData.getString('showDetailsLink');
-  $('show-details-link').hidden = !showDetailsLink;
-  $('back-button').hidden = showDetailsLink || !window.domAutomationController;
   $('back-button').onclick = function(event) {
     sendCommand('back');
   };
-  $('show-details-link').onclick = function(event) {
-    $('details').hidden = false;
-    $('show-details-link').hidden = true;
-    $('hide-details-link').hidden = false;
-    $('information-container').classList.add('hidden-on-mobile');
-    $('request-access-button').classList.add('hidden-on-mobile');
-  };
-  $('hide-details-link').onclick = function(event) {
-    $('details').hidden = true;
-    $('show-details-link').hidden = false;
-    $('hide-details-link').hidden = true;
-    $('information-container').classList.remove('hidden-on-mobile');
-    $('request-access-button').classList.remove('hidden-on-mobile');
-  };
-  if (window.domAutomationController &&
-        loadTimeData.getBoolean('showFeedbackLink')) {
+  if (loadTimeData.getBoolean('showFeedbackLink')) {
+    $('show-details-link').onclick = function(event) {
+      showDetails = true;
+      $('show-details-link').hidden = true;
+      $('hide-details-link').hidden = false;
+      updateDetails();
+    };
+    $('hide-details-link').onclick = function(event) {
+      showDetails = false;
+      $('show-details-link').hidden = false;
+      $('hide-details-link').hidden = true;
+      updateDetails();
+    };
     $('feedback-link').onclick = function(event) {
       sendCommand('feedback');
     };
   } else {
     $('feedback').hidden = true;
+    $('details-button-container').hidden = true;
   }
 }
 
@@ -88,17 +117,20 @@ function setRequestStatus(isSuccessful) {
   console.log('setRequestStatus(' + isSuccessful +')');
   $('block-page-header').hidden = true;
   $('block-page-message').hidden = true;
+  $('hide-details-link').hidden = true;
+  showDetails = false;
+  updateDetails();
+
   if (isSuccessful) {
     $('request-failed-message').hidden = true;
     $('request-sent-message').hidden = false;
-    $('show-details-link').hidden = true;
-    $('hide-details-link').hidden = true;
-    $('details').hidden = true;
-    $('back-button').hidden = !window.domAutomationController;
+    $('back-button').hidden = false;
     $('request-access-button').hidden = true;
+    $('show-details-link').hidden = true;
   } else {
     $('request-failed-message').hidden = false;
     $('request-access-button').hidden = false;
+    $('show-details-link').hidden = false;
   }
 }
 

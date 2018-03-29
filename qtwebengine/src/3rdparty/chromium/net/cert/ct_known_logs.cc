@@ -25,7 +25,7 @@ namespace ct {
 
 namespace {
 
-#include "net/cert/ct_known_logs_static-inc.h"
+#include "net/data/ssl/certificate_transparency/log_list-inc.cc"
 
 }  // namespace
 
@@ -92,4 +92,3 @@ bool IsLogDisqualified(base::StringPiece log_id,
 }  // namespace ct
 
 }  // namespace net
-

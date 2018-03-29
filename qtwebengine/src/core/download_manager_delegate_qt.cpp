@@ -65,7 +65,7 @@ DownloadManagerDelegateQt::DownloadManagerDelegateQt(BrowserContextAdapter *cont
     : m_contextAdapter(contextAdapter)
     , m_currentId(0)
     , m_weakPtrFactory(this)
-    , m_downloadType(BrowserContextAdapterClient::Attachment)
+    , m_nextDownloadIsUserRequested(false)
 {
     Q_ASSERT(m_contextAdapter);
 }
@@ -81,7 +81,7 @@ void DownloadManagerDelegateQt::GetNextId(const content::DownloadIdCallback& cal
 
 void DownloadManagerDelegateQt::cancelDownload(const content::DownloadTargetCallback& callback)
 {
-    callback.Run(base::FilePath(), content::DownloadItem::TARGET_DISPOSITION_PROMPT, content::DOWNLOAD_DANGER_TYPE_MAYBE_DANGEROUS_CONTENT, base::FilePath());
+    callback.Run(base::FilePath(), content::DownloadItem::TARGET_DISPOSITION_PROMPT, content::DOWNLOAD_DANGER_TYPE_MAYBE_DANGEROUS_CONTENT, base::FilePath(), content::DOWNLOAD_INTERRUPT_REASON_USER_CANCELED);
 }
 
 void DownloadManagerDelegateQt::cancelDownload(quint32 downloadId)
@@ -92,6 +92,22 @@ void DownloadManagerDelegateQt::cancelDownload(quint32 downloadId)
         download->Cancel(/* user_cancel */ true);
 }
 
+void DownloadManagerDelegateQt::pauseDownload(quint32 downloadId)
+{
+    content::DownloadManager* dlm = content::BrowserContext::GetDownloadManager(m_contextAdapter->browserContext());
+    content::DownloadItem *download = dlm->GetDownload(downloadId);
+    if (download)
+        download->Pause();
+}
+
+void DownloadManagerDelegateQt::resumeDownload(quint32 downloadId)
+{
+    content::DownloadManager* dlm = content::BrowserContext::GetDownloadManager(m_contextAdapter->browserContext());
+    content::DownloadItem *download = dlm->GetDownload(downloadId);
+    if (download)
+        download->Resume();
+}
+
 bool DownloadManagerDelegateQt::DetermineDownloadTarget(content::DownloadItem* item,
                                                         const content::DownloadTargetCallback& callback)
 {
@@ -100,17 +116,24 @@ bool DownloadManagerDelegateQt::DetermineDownloadTarget(content::DownloadItem* i
     // store downloads and other special downloads, so they might never end up here anyway.
     if (!item->GetForcedFilePath().empty()) {
         callback.Run(item->GetForcedFilePath(), content::DownloadItem::TARGET_DISPOSITION_PROMPT,
-                     content::DOWNLOAD_DANGER_TYPE_NOT_DANGEROUS, item->GetForcedFilePath());
+                     content::DOWNLOAD_DANGER_TYPE_NOT_DANGEROUS, item->GetForcedFilePath(), content::DOWNLOAD_INTERRUPT_REASON_NONE);
         return true;
     }
 
     QString suggestedFilename = toQt(item->GetSuggestedFilename());
     QString mimeTypeString = toQt(item->GetMimeType());
 
-    bool isAttachment = net::HttpContentDisposition(item->GetContentDisposition(), std::string()).is_attachment();
-
-    if (!isAttachment || !BrowserContextAdapterClient::UserRequested)
-        m_downloadType = BrowserContextAdapterClient::DownloadAttribute;
+    int downloadType = 0;
+    if (m_nextDownloadIsUserRequested) {
+        downloadType = BrowserContextAdapterClient::UserRequested;
+        m_nextDownloadIsUserRequested = false;
+    } else {
+        bool isAttachment = net::HttpContentDisposition(item->GetContentDisposition(), std::string()).is_attachment();
+        if (isAttachment)
+            downloadType = BrowserContextAdapterClient::Attachment;
+        else
+            downloadType = BrowserContextAdapterClient::DownloadAttribute;
+    }
 
     if (suggestedFilename.isEmpty())
         suggestedFilename = toQt(net::HttpContentDisposition(item->GetContentDisposition(), std::string()).filename());
@@ -155,7 +178,9 @@ bool DownloadManagerDelegateQt::DetermineDownloadTarget(content::DownloadItem* i
             suggestedFilePath,
             BrowserContextAdapterClient::UnknownSavePageFormat,
             false /* accepted */,
-            m_downloadType,
+            false /* paused */,
+            false /* done */,
+            downloadType,
             item->GetLastReason()
         };
 
@@ -178,8 +203,11 @@ bool DownloadManagerDelegateQt::DetermineDownloadTarget(content::DownloadItem* i
         }
 
         base::FilePath filePathForCallback(toFilePathString(suggestedFile.absoluteFilePath()));
-        callback.Run(filePathForCallback, content::DownloadItem::TARGET_DISPOSITION_OVERWRITE,
-                     content::DOWNLOAD_DANGER_TYPE_MAYBE_DANGEROUS_CONTENT, filePathForCallback.AddExtension(toFilePathString("download")));
+        callback.Run(filePathForCallback,
+                     content::DownloadItem::TARGET_DISPOSITION_OVERWRITE,
+                     content::DOWNLOAD_DANGER_TYPE_MAYBE_DANGEROUS_CONTENT,
+                     filePathForCallback.AddExtension(toFilePathString("download")),
+                     content::DOWNLOAD_INTERRUPT_REASON_NONE);
     } else
         cancelDownload(callback);
 
@@ -245,6 +273,8 @@ void DownloadManagerDelegateQt::ChooseSavePath(content::WebContents *web_content
         suggestedFilePath,
         suggestedSaveFormat,
         acceptedByDefault,
+        false, /* paused */
+        false, /* done */
         BrowserContextAdapterClient::SavePage,
         BrowserContextAdapterClient::NoReason
     };
@@ -283,7 +313,9 @@ void DownloadManagerDelegateQt::OnDownloadUpdated(content::DownloadItem *downloa
             QString(),
             BrowserContextAdapterClient::UnknownSavePageFormat,
             true /* accepted */,
-            m_downloadType,
+            download->IsPaused(),
+            download->IsDone(),
+            0 /* downloadType (unused) */,
             download->GetLastReason()
         };
 

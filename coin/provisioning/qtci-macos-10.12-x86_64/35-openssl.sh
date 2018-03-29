@@ -37,10 +37,12 @@
 
 set -ex
 
-# shellcheck source=../common/try_catch.sh
-source "${BASH_SOURCE%/*}/../common/try_catch.sh"
-# shellcheck source=../common/InstallFromCompressedFileFromURL.sh
-source "${BASH_SOURCE%/*}/../common/InstallFromCompressedFileFromURL.sh"
+# shellcheck source=../common/unix/try_catch.sh
+source "${BASH_SOURCE%/*}/../common/unix/try_catch.sh"
+# shellcheck source=../common/unix/InstallFromCompressedFileFromURL.sh
+source "${BASH_SOURCE%/*}/../common/unix/InstallFromCompressedFileFromURL.sh"
+# shellcheck source=../common/unix/SetEnvVar.sh
+source "${BASH_SOURCE%/*}/../common/unix/SetEnvVar.sh"
 
 opensslVersion="1.0.2k"
 opensslFile="openssl-$opensslVersion.tar.gz"
@@ -75,8 +77,8 @@ try
     sudo mkdir -p "$path"
     sudo ln -s /usr/local/openssl-$opensslVersion $opensslTargetLocation || throw $ExceptionLN
 
-    echo "export PATH=\"$opensslTargetLocation/bin:\$PATH\"" >> ~/.bashrc
-    echo "export MANPATH=\"$opensslTargetLocation/share/man:\$MANPATH\"" >> ~/.bashrc
+    SetEnvVar "PATH" "\"$opensslTargetLocation/bin:\$PATH\""
+    SetEnvVar "MANPATH" "\"$opensslTargetLocation/share/man:\$MANPATH\""
 
     security find-certificate -a -p /Library/Keychains/System.keychain | sudo tee -a $opensslTargetLocation/ssl/cert.pem || throw $ExceptionCertificate
     security find-certificate -a -p /System/Library/Keychains/SystemRootCertificates.keychain | sudo tee -a $opensslTargetLocation/ssl/cert.pem || throw $ExceptionCertificate

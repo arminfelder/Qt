@@ -1002,6 +1002,7 @@ bool QOpenGLContext::makeCurrent(QSurface *surface)
                 if (rendererString)
                     needsWorkaround =
                             qstrncmp(rendererString, "Mali-4xx", 6) == 0 // Mali-400, Mali-450
+                            || qstrcmp(rendererString, "Mali-T880") == 0
                             || qstrncmp(rendererString, "Adreno (TM) 2xx", 13) == 0 // Adreno 200, 203, 205
                             || qstrncmp(rendererString, "Adreno 2xx", 8) == 0 // Same as above but without the '(TM)'
                             || qstrncmp(rendererString, "Adreno (TM) 30x", 14) == 0 // Adreno 302, 305
@@ -1678,6 +1679,61 @@ void QOpenGLMultiGroupSharedResource::cleanup(QOpenGLContextGroup *group, QOpenG
     Q_ASSERT(m_groups.contains(group));
     m_groups.removeOne(group);
 }
+
+#ifndef QT_NO_DEBUG_STREAM
+QDebug operator<<(QDebug debug, const QOpenGLVersionProfile &vp)
+{
+    QDebugStateSaver saver(debug);
+    debug.nospace();
+    debug << "QOpenGLVersionProfile(";
+    if (vp.isValid()) {
+        debug << vp.version().first << '.' << vp.version().second
+            << ", profile=" << vp.profile();
+    } else {
+        debug << "invalid";
+    }
+    debug << ')';
+    return debug;
+}
+
+QDebug operator<<(QDebug debug, const QOpenGLContext *ctx)
+{
+    QDebugStateSaver saver(debug);
+    debug.nospace();
+    debug.noquote();
+    debug << "QOpenGLContext(";
+    if (ctx)  {
+        debug << static_cast<const void *>(ctx);
+        if (ctx->isValid()) {
+            debug << ", nativeHandle=" << ctx->nativeHandle()
+                << ", format=" << ctx->format();
+            if (const QSurface *sf = ctx->surface())
+                debug << ", surface=" << sf;
+            if (const QScreen *s = ctx->screen())
+                debug << ", screen=\"" << s->name() << '"';
+        } else {
+            debug << ", invalid";
+        }
+    } else {
+        debug << '0';
+    }
+    debug << ')';
+    return debug;
+}
+
+QDebug operator<<(QDebug debug, const QOpenGLContextGroup *cg)
+{
+    QDebugStateSaver saver(debug);
+    debug.nospace();
+    debug << "QOpenGLContextGroup(";
+    if (cg)
+        debug << cg->shares();
+    else
+        debug << '0';
+    debug << ')';
+    return debug;
+}
+#endif // QT_NO_DEBUG_STREAM
 
 #include "moc_qopenglcontext.cpp"
 

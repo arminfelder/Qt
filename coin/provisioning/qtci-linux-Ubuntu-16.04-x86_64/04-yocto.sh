@@ -37,15 +37,16 @@
 
 set -ex
 
-source "${BASH_SOURCE%/*}/../common/DownloadURL.sh"
+source "${BASH_SOURCE%/*}/../common/unix/DownloadURL.sh"
+source "${BASH_SOURCE%/*}/../common/unix/SetEnvVar.sh"
 
 echo "Installing Yocto toolchain for 32-bit b2qt..."
 
-versionARM="2.2.2"
-package="b2qt-x86_64-meta-toolchain-b2qt-embedded-sdk-qemuarmv7-2c947f7.sh"
-PrimaryUrl="http://ci-files01-hki.intra.qt.io/input/boot2qt/morty/$package"
-AltUrl="http://download.qt.io/development_releases/prebuilt/boot2qt/morty/$package"
-SHA1="2583ae29951954cb27f12400fcb4ee94738d1430"
+versionARM="2.3.1"
+package="b2qt-x86_64-meta-toolchain-b2qt-embedded-sdk-qemuarmv7-41b0b46.sh"
+PrimaryUrl="http://ci-files01-hki.intra.qt.io/input/boot2qt/pyro/$package"
+AltUrl="http://download.qt.io/development_releases/prebuilt/boot2qt/pyro/$package"
+SHA1="f17cce550c9d2148f11ae5c760f43a67e9813a45"
 yoctoInstaller="/tmp/yocto-toolchain-ARMv7.sh"
 yoctoLocationARMv7="/opt/yocto-armv7"
 sysrootARMv7="sysroots/armv7ahf-neon-poky-linux-gnueabi"
@@ -59,11 +60,11 @@ rm -rf "$yoctoInstaller"
 
 echo "Installing Yocto toolchain for 64-bit b2qt..."
 
-versionARM64="2.2.2"
-package="b2qt-x86_64-meta-toolchain-b2qt-embedded-sdk-qemuarm64-2c947f7.sh"
-PrimaryUrl="http://ci-files01-hki.intra.qt.io/input/boot2qt/morty/$package"
-AltUrl="http://download.qt.io/development_releases/prebuilt/boot2qt/morty/$package"
-SHA1="512b5bc1ad62af88d021eb511eeac4648d661fc6"
+versionARM64="2.3.1"
+package="b2qt-x86_64-meta-toolchain-b2qt-embedded-sdk-qemuarm64-41b0b46.sh"
+PrimaryUrl="http://ci-files01-hki.intra.qt.io/input/boot2qt/pyro/$package"
+AltUrl="http://download.qt.io/development_releases/prebuilt/boot2qt/pyro/$package"
+SHA1="b49d7ec8a6339dda5a82815dc31fed1fae00851d"
 yoctoInstaller="/tmp/yocto-toolchain-ARM64.sh"
 yoctoLocationARM64="/opt/yocto-arm64"
 sysrootARM64="sysroots/aarch64-poky-linux"
@@ -76,10 +77,10 @@ chmod +x "$yoctoInstaller"
 rm -rf "$yoctoInstaller"
 
 if [ -e "$yoctoLocationARMv7/$sysrootARMv7" -a -e "$yoctoLocationARMv7/${crosscompileARMv7}g++" -a -e "$yoctoLocationARM64/$sysrootARM64" -a -e "$yoctoLocationARM64/${crosscompileARM64}g++" ]; then
-    echo "export QEMUARMV7_TOOLCHAIN_SYSROOT=$yoctoLocationARMv7/$sysrootARMv7" >> ~/.profile
-    echo "export QEMUARMV7_TOOLCHAIN_CROSS_COMPILE=$yoctoLocationARMv7/$crosscompileARMv7" >> ~/.profile
-    echo "export QEMUARM64_TOOLCHAIN_SYSROOT=$yoctoLocationARM64/$sysrootARM64" >> ~/.profile
-    echo "export QEMUARM64_TOOLCHAIN_CROSS_COMPILE=$yoctoLocationARM64/$crosscompileARM64" >> ~/.profile
+    SetEnvVar "QEMUARMV7_TOOLCHAIN_SYSROOT" "$yoctoLocationARMv7/$sysrootARMv7"
+    SetEnvVar "QEMUARMV7_TOOLCHAIN_CROSS_COMPILE" "$yoctoLocationARMv7/$crosscompileARMv7"
+    SetEnvVar "QEMUARM64_TOOLCHAIN_SYSROOT" "$yoctoLocationARM64/$sysrootARM64"
+    SetEnvVar "QEMUARM64_TOOLCHAIN_CROSS_COMPILE" "$yoctoLocationARM64/$crosscompileARM64"
 else
     echo "Error! Couldn't find installation paths for Yocto toolchain. Aborting provisioning." 1>&2
     exit 1

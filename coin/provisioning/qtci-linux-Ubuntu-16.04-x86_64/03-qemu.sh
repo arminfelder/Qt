@@ -33,6 +33,9 @@
 #############################################################################
 
 set -ex
+
+source "${BASH_SOURCE%/*}/../common/unix/SetEnvVar.sh"
+
 # build latest qemu to usermode
 sudo apt-get -y install automake autoconf libtool
 
@@ -91,4 +94,10 @@ sed $QEMU_FONTCONFFILE -e "s:/usr/share/fonts:$QEMU_FONTCONFPATH/fonts:" -i
 sed $QEMU_FONTCONFFILE -e "s:/usr/local/share/fonts:$QEMU_FONTCONFPATH/local_fonts:" -i
 
 # Set QEMU font configuration variables
-echo "export QEMU_SET_ENV=\"FONTCONFIG_FILE=$QEMU_FONTCONFFILE,FONTCONFIG_PATH=$QEMU_FONTCONFPATH\"" >> ~/.profile
+qemu_env="FONTCONFIG_FILE=$QEMU_FONTCONFFILE"
+qemu_env="${qemu_env},FONTCONFIG_PATH=$QEMU_FONTCONFPATH"
+
+# Disable QtWayland window decorations, as they cause flakiness when used inside qemu (QTBUG-66173)
+qemu_env="${qemu_env},QT_WAYLAND_DISABLE_WINDOWDECORATION=1"
+
+SetEnvVar "QEMU_SET_ENV" "\"${qemu_env}\""

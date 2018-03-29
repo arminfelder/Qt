@@ -110,7 +110,10 @@ Q_DECLARE_METATYPE(QQmlProperty)
 QT_BEGIN_NAMESPACE
 
 typedef QQmlData::BindingBitsType BindingBitsType;
-enum { MaxInlineBits = QQmlData::MaxInlineBits };
+enum {
+    BitsPerType = QQmlData::BitsPerType,
+    InlineBindingArraySize = QQmlData::InlineBindingArraySize
+};
 
 void qmlRegisterBaseTypes(const char *uri, int versionMajor, int versionMinor)
 {
@@ -450,6 +453,12 @@ The following functions are also on the Qt object.
         \li \c "windows" - Windows
         \li \c "winrt" - WinRT / UWP
     \endlist
+
+    \row
+    \li \c platform.pluginName
+    \li This is the name of the platform set on the QGuiApplication instance
+        as returned by \l QGuiApplication::platformName()
+
     \endtable
 */
 
@@ -741,11 +750,12 @@ QQmlData::QQmlData()
     : ownedByQml1(false), ownMemory(true), indestructible(true), explicitIndestructibleSet(false),
       hasTaintedV4Object(false), isQueuedForDeletion(false), rootObjectInCreation(false),
       hasInterceptorMetaObject(false), hasVMEMetaObject(false), parentFrozen(false),
-      bindingBitsSize(MaxInlineBits), bindingBitsValue(0), notifyList(0),
+      bindingBitsArraySize(InlineBindingArraySize), notifyList(0),
       bindings(0), signalHandlers(0), nextContextObject(0), prevContextObject(0),
       lineNumber(0), columnNumber(0), jsEngineId(0), compilationUnit(0),
       propertyCache(0), guards(0), extendedData(0)
 {
+    memset(bindingBitsValue, 0, sizeof(bindingBitsValue));
     init();
 }
 
@@ -770,7 +780,7 @@ class QQmlThreadNotifierProxyObject : public QObject
 public:
     QPointer<QObject> target;
 
-    virtual int qt_metacall(QMetaObject::Call, int methodIndex, void **a) {
+    int qt_metacall(QMetaObject::Call, int methodIndex, void **a) override {
         if (!target)
             return -1;
 
@@ -1335,6 +1345,30 @@ void QQmlEngine::setOutputWarningsToStandardError(bool enabled)
 }
 
 /*!
+  Refreshes all binding expressions that use strings marked for translation.
+
+  Call this function after you have installed a new translator with
+  QCoreApplication::installTranslator, to ensure that your user-interface
+  shows up-to-date translations.
+
+  \note Due to a limitation in the implementation, this function
+  refreshes all the engine's bindings, not only those that use strings
+  marked for translation.
+  This may be optimized in a future release.
+
+  \since 5.10
+*/
+void QQmlEngine::retranslate()
+{
+    Q_D(QQmlEngine);
+    QQmlContextData *context = QQmlContextData::get(d->rootContext)->childContexts;
+    while (context) {
+        context->refreshExpressions();
+        context = context->nextChild;
+    }
+}
+
+/*!
   Returns the QQmlContext for the \a object, or 0 if no
   context has been set.
 
@@ -1454,6 +1488,9 @@ bool QQmlEngine::event(QEvent *e)
     Q_D(QQmlEngine);
     if (e->type() == QEvent::User)
         d->doDeleteInEngineThread();
+    else if (e->type() == QEvent::LanguageChange) {
+        retranslate();
+    }
 
     return QJSEngine::event(e);
 }
@@ -1503,9 +1540,9 @@ QQmlEngine *qmlEngine(const QObject *obj)
 
 QObject *qmlAttachedPropertiesObjectById(int id, const QObject *object, bool create)
 {
-    QQmlData *data = QQmlData::get(object);
+    QQmlData *data = QQmlData::get(object, create);
     if (!data)
-        return 0; // Attached properties are only on objects created by QML
+        return 0; // Attached properties are only on objects created by QML, unless explicitly requested (create==true)
 
     QObject *rv = data->hasExtendedData()?data->attachedProperties()->value(id):0;
     if (rv || !create)
@@ -1792,7 +1829,7 @@ void QQmlData::destroyed(QObject *object)
         signalHandler = next;
     }
 
-    if (bindingBitsSize > MaxInlineBits)
+    if (bindingBitsArraySize > InlineBindingArraySize)
         free(bindingBits);
 
     if (propertyCache)
@@ -1841,47 +1878,35 @@ void QQmlData::parentChanged(QObject *object, QObject *parent)
 
 static void QQmlData_setBit(QQmlData *data, QObject *obj, int bit)
 {
-    if (Q_UNLIKELY(data->bindingBitsSize <= bit)) {
+    uint offset = QQmlData::offsetForBit(bit);
+    BindingBitsType *bits = (data->bindingBitsArraySize == InlineBindingArraySize) ? data->bindingBitsValue : data->bindingBits;
+    if (Q_UNLIKELY(data->bindingBitsArraySize <= offset)) {
         int props = QQmlMetaObject(obj).propertyCount();
         Q_ASSERT(bit < 2 * props);
 
-        int arraySize = (2 * props + MaxInlineBits - 1) / MaxInlineBits;
-        Q_ASSERT(arraySize > 1);
+        uint arraySize = (2 * static_cast<uint>(props) + BitsPerType - 1) / BitsPerType;
+        Q_ASSERT(arraySize > InlineBindingArraySize && arraySize > data->bindingBitsArraySize);
 
-        // special handling for 32 here is to make sure we wipe the first byte
-        // when going from bindingBitsValue to bindingBits, and preserve the old
-        // set bits so we can restore them after the allocation
-        int oldArraySize = data->bindingBitsSize > MaxInlineBits ? data->bindingBitsSize / MaxInlineBits : 0;
-        quintptr oldValue = data->bindingBitsSize == MaxInlineBits ? data->bindingBitsValue : 0;
+        BindingBitsType *newBits = static_cast<BindingBitsType *>(malloc(arraySize*sizeof(BindingBitsType)));
+        memcpy(newBits, bits, data->bindingBitsArraySize * sizeof(BindingBitsType));
+        memset(newBits + data->bindingBitsArraySize, 0, sizeof(BindingBitsType) * (arraySize - data->bindingBitsArraySize));
 
-        data->bindingBits = static_cast<BindingBitsType *>(realloc((data->bindingBitsSize == MaxInlineBits) ? 0 : data->bindingBits,
-                                                                   arraySize * sizeof(BindingBitsType)));
-
-        memset(data->bindingBits + oldArraySize,
-               0x00,
-               sizeof(BindingBitsType) * (arraySize - oldArraySize));
-
-        data->bindingBitsSize = arraySize * MaxInlineBits;
-
-        // reinstate bindingBitsValue after we dropped it
-        if (oldValue) {
-            memcpy(data->bindingBits, &oldValue, sizeof(oldValue));
-        }
+        if (data->bindingBitsArraySize > InlineBindingArraySize)
+            free(bits);
+        data->bindingBits = newBits;
+        bits = newBits;
+        data->bindingBitsArraySize = arraySize;
     }
-
-    if (data->bindingBitsSize == MaxInlineBits)
-        data->bindingBitsValue |= BindingBitsType(1) << bit;
-    else
-        data->bindingBits[bit / MaxInlineBits] |= (BindingBitsType(1) << (bit % MaxInlineBits));
+    Q_ASSERT(offset < data->bindingBitsArraySize);
+    bits[offset] |= QQmlData::bitFlagForBit(bit);
 }
 
 static void QQmlData_clearBit(QQmlData *data, int bit)
 {
-    if (data->bindingBitsSize > bit) {
-        if (data->bindingBitsSize == MaxInlineBits)
-            data->bindingBitsValue &= ~(BindingBitsType(1) << (bit % MaxInlineBits));
-        else
-            data->bindingBits[bit / MaxInlineBits] &= ~(BindingBitsType(1) << (bit % MaxInlineBits));
+    uint offset = QQmlData::offsetForBit(bit);
+    if (data->bindingBitsArraySize > offset) {
+        BindingBitsType *bits = (data->bindingBitsArraySize == InlineBindingArraySize) ? data->bindingBitsValue : data->bindingBits;
+        bits[offset] &= ~QQmlData::bitFlagForBit(bit);
     }
 }
 

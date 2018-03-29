@@ -129,10 +129,12 @@ RenderView::StandardUniformsNameToTypeHash RenderView::initializeStandardUniform
     setters.insert(StringToInt::lookupId(QLatin1String("modelViewNormal")), ModelViewNormalMatrix);
     setters.insert(StringToInt::lookupId(QLatin1String("viewportMatrix")), ViewportMatrix);
     setters.insert(StringToInt::lookupId(QLatin1String("inverseViewportMatrix")), InverseViewportMatrix);
+    setters.insert(StringToInt::lookupId(QLatin1String("aspectRatio")), AspectRatio);
     setters.insert(StringToInt::lookupId(QLatin1String("exposure")), Exposure);
     setters.insert(StringToInt::lookupId(QLatin1String("gamma")), Gamma);
     setters.insert(StringToInt::lookupId(QLatin1String("time")), Time);
     setters.insert(StringToInt::lookupId(QLatin1String("eyePosition")), EyePosition);
+    setters.insert(StringToInt::lookupId(QLatin1String("skinningPalette[0]")), SkinningPalette);
 
     return setters;
 }
@@ -153,7 +155,9 @@ static QMatrix4x4 getProjectionMatrix(const CameraLens *lens)
     return lens ? lens->projection() : QMatrix4x4();
 }
 
-UniformValue RenderView::standardUniformValue(RenderView::StandardUniform standardUniformType, const QMatrix4x4 &model) const
+UniformValue RenderView::standardUniformValue(RenderView::StandardUniform standardUniformType,
+                                              Entity *entity,
+                                              const QMatrix4x4 &model) const
 {
     switch (standardUniformType) {
     case ModelMatrix:
@@ -197,6 +201,8 @@ UniformValue RenderView::standardUniformValue(RenderView::StandardUniform standa
         viewportMatrix.viewport(resolveViewport(m_viewport, m_surfaceSize));
         return UniformValue(viewportMatrix.inverted());
     }
+    case AspectRatio:
+        return float(m_surfaceSize.width()) / float(m_surfaceSize.height());
     case Exposure:
         return UniformValue(m_data.m_renderCameraLens ? m_data.m_renderCameraLens->exposure() : 0.0f);
     case Gamma:
@@ -205,6 +211,14 @@ UniformValue RenderView::standardUniformValue(RenderView::StandardUniform standa
         return UniformValue(float(m_renderer->time() / 1000000000.0f));
     case EyePosition:
         return UniformValue(m_data.m_eyePos);
+    case SkinningPalette: {
+        const Armature *armature = entity->renderComponent<Armature>();
+        if (!armature) {
+            qCWarning(Jobs, "Requesting skinningPalette uniform but no armature set on entity");
+            return UniformValue();
+        }
+        return armature->skinningPaletteUniform();
+    }
     default:
         Q_UNREACHABLE();
         return UniformValue();
@@ -213,6 +227,7 @@ UniformValue RenderView::standardUniformValue(RenderView::StandardUniform standa
 
 RenderView::RenderView()
     : m_isDownloadBuffersEnable(false)
+    , m_hasBlitFramebufferInfo(false)
     , m_renderer(nullptr)
     , m_devicePixelRatio(1.)
     , m_viewport(QRectF(0.0f, 0.0f, 1.0f, 1.0f))
@@ -541,16 +556,17 @@ QVector<RenderCommand *> RenderView::buildDrawRenderCommands(const QVector<Entit
     QVector<RenderCommand *> commands;
     commands.reserve(entities.size());
 
-    for (Entity *node : entities) {
+    for (Entity *entity : entities) {
         GeometryRenderer *geometryRenderer = nullptr;
-        HGeometryRenderer geometryRendererHandle = node->componentHandle<GeometryRenderer>();
+        HGeometryRenderer geometryRendererHandle = entity->componentHandle<GeometryRenderer>();
+
         // There is a geometry renderer with geometry
         if ((geometryRenderer = m_manager->geometryRendererManager()->data(geometryRendererHandle)) != nullptr
                 && geometryRenderer->isEnabled()
                 && !geometryRenderer->geometryId().isNull()) {
 
-            const Qt3DCore::QNodeId materialComponentId = node->componentUuid<Material>();
-            const HMaterial materialHandle = node->componentHandle<Material>();
+            const Qt3DCore::QNodeId materialComponentId = entity->componentUuid<Material>();
+            const HMaterial materialHandle = entity->componentHandle<Material>();
             const  QVector<RenderPassParameterData> renderPassData = m_parameters.value(materialComponentId);
             HGeometry geometryHandle = m_manager->lookupHandle<Geometry, GeometryManager, HGeometry>(geometryRenderer->geometryId());
             Geometry *geometry = m_manager->data<Geometry, GeometryManager>(geometryHandle);
@@ -563,7 +579,7 @@ QVector<RenderCommand *> RenderView::buildDrawRenderCommands(const QVector<Entit
                 // Project the camera-to-object-center vector onto the camera
                 // view vector. This gives a depth value suitable as the key
                 // for BackToFront sorting.
-                command->m_depth = QVector3D::dotProduct(node->worldBoundingVolume()->center() - m_data.m_eyePos, m_data.m_eyeViewDir);
+                command->m_depth = QVector3D::dotProduct(entity->worldBoundingVolume()->center() - m_data.m_eyePos, m_data.m_eyeViewDir);
 
                 command->m_geometry = geometryHandle;
                 command->m_geometryRenderer = geometryRendererHandle;
@@ -590,7 +606,7 @@ QVector<RenderCommand *> RenderView::buildDrawRenderCommands(const QVector<Entit
                 // Copy vector so that we can sort it concurrently and we only want to sort the one for the current command
                 QVector<LightSource> lightSources = m_lightSources;
                 if (lightSources.size() > 1)
-                    std::sort(lightSources.begin(), lightSources.end(), LightSourceCompare(node));
+                    std::sort(lightSources.begin(), lightSources.end(), LightSourceCompare(entity));
 
                 ParameterInfoList globalParameters = passData.parameterInfo;
                 // setShaderAndUniforms can initialize a localData
@@ -598,7 +614,7 @@ QVector<RenderCommand *> RenderView::buildDrawRenderCommands(const QVector<Entit
                 setShaderAndUniforms(command,
                                      pass,
                                      globalParameters,
-                                     *(node->worldTransform()),
+                                     entity,
                                      lightSources.mid(0, std::max(lightSources.size(), MAX_LIGHTS)),
                                      m_environmentLight);
 
@@ -676,12 +692,12 @@ QVector<RenderCommand *> RenderView::buildComputeRenderCommands(const QVector<En
     // material/effect/technique/parameters/filters/
     QVector<RenderCommand *> commands;
     commands.reserve(entities.size());
-    for (Entity *node : entities) {
+    for (Entity *entity : entities) {
         ComputeCommand *computeJob = nullptr;
-        if ((computeJob = node->renderComponent<ComputeCommand>()) != nullptr
+        if ((computeJob = entity->renderComponent<ComputeCommand>()) != nullptr
                 && computeJob->isEnabled()) {
 
-            const Qt3DCore::QNodeId materialComponentId = node->componentUuid<Material>();
+            const Qt3DCore::QNodeId materialComponentId = entity->componentUuid<Material>();
             const  QVector<RenderPassParameterData> renderPassData = m_parameters.value(materialComponentId);
 
             // 1 RenderCommand per RenderPass pass on an Entity with a Mesh
@@ -699,7 +715,7 @@ QVector<RenderCommand *> RenderView::buildComputeRenderCommands(const QVector<En
                 setShaderAndUniforms(command,
                                      pass,
                                      globalParameters,
-                                     *(node->worldTransform()),
+                                     entity,
                                      QVector<LightSource>(),
                                      nullptr);
                 commands.append(command);
@@ -716,7 +732,9 @@ QVector<RenderCommand *> RenderView::buildComputeRenderCommands(const QVector<En
 void RenderView::updateMatrices()
 {
     if (m_data.m_renderCameraNode && m_data.m_renderCameraLens && m_data.m_renderCameraLens->isEnabled()) {
-        setViewMatrix(*m_data.m_renderCameraNode->worldTransform());
+        const QMatrix4x4 cameraWorld = *(m_data.m_renderCameraNode->worldTransform());
+        setViewMatrix(m_data.m_renderCameraLens->viewMatrix(cameraWorld));
+
         setViewProjectionMatrix(m_data.m_renderCameraLens->projection() * viewMatrix());
         //To get the eyePosition of the camera, we need to use the inverse of the
         //camera's worldTransform matrix.
@@ -752,9 +770,13 @@ void RenderView::setUniformValue(ShaderParameterPack &uniformPack, int nameId, c
     }
 }
 
-void RenderView::setStandardUniformValue(ShaderParameterPack &uniformPack, int glslNameId, int nameId, const QMatrix4x4 &worldTransform) const
+void RenderView::setStandardUniformValue(ShaderParameterPack &uniformPack,
+                                         int glslNameId,
+                                         int nameId,
+                                         Entity *entity,
+                                         const QMatrix4x4 &worldTransform) const
 {
-    uniformPack.setUniform(glslNameId, standardUniformValue(ms_standardUniformSetters[nameId], worldTransform));
+    uniformPack.setUniform(glslNameId, standardUniformValue(ms_standardUniformSetters[nameId], entity, worldTransform));
 }
 
 void RenderView::setUniformBlockValue(ShaderParameterPack &uniformPack,
@@ -889,8 +911,12 @@ void RenderView::prepareForSorting(RenderCommand *command) const
     }
 }
 
-void RenderView::setShaderAndUniforms(RenderCommand *command, RenderPass *rPass, ParameterInfoList &parameters, const QMatrix4x4 &worldTransform,
-                                      const QVector<LightSource> &activeLightSources, EnvironmentLight *environmentLight) const
+void RenderView::setShaderAndUniforms(RenderCommand *command,
+                                      RenderPass *rPass,
+                                      ParameterInfoList &parameters,
+                                      Entity *entity,
+                                      const QVector<LightSource> &activeLightSources,
+                                      EnvironmentLight *environmentLight) const
 {
     // The VAO Handle is set directly in the renderer thread so as to avoid having to use a mutex here
     // Set shader, technique, and effect by basically doing :
@@ -933,9 +959,10 @@ void RenderView::setShaderAndUniforms(RenderCommand *command, RenderPass *rPass,
                     !shaderStorageBlockNamesIds.isEmpty() || !attributeNamesIds.isEmpty()) {
 
                 // Set default standard uniforms without bindings
+                QMatrix4x4 worldTransform = *(entity->worldTransform());
                 for (const int uniformNameId : uniformNamesIds) {
                     if (ms_standardUniformSetters.contains(uniformNameId))
-                        setStandardUniformValue(command->m_parameterPack, uniformNameId, uniformNameId, worldTransform);
+                        setStandardUniformValue(command->m_parameterPack, uniformNameId, uniformNameId, entity, worldTransform);
                 }
 
                 // Set default attributes
@@ -1039,6 +1066,26 @@ void RenderView::setShaderAndUniforms(RenderCommand *command, RenderPass *rPass,
     else {
         qCWarning(Render::Backend) << Q_FUNC_INFO << "Using default effect as none was provided";
     }
+}
+
+bool RenderView::hasBlitFramebufferInfo() const
+{
+    return m_hasBlitFramebufferInfo;
+}
+
+void RenderView::setHasBlitFramebufferInfo(bool hasBlitFramebufferInfo)
+{
+    m_hasBlitFramebufferInfo = hasBlitFramebufferInfo;
+}
+
+BlitFramebufferInfo RenderView::blitFrameBufferInfo() const
+{
+    return m_blitFrameBufferInfo;
+}
+
+void RenderView::setBlitFrameBufferInfo(const BlitFramebufferInfo &blitFrameBufferInfo)
+{
+    m_blitFrameBufferInfo = blitFrameBufferInfo;
 }
 
 bool RenderView::isDownloadBuffersEnable() const

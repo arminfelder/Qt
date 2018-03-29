@@ -47,8 +47,9 @@
 #include "qwebenginesettings.h"
 #include "qwebenginescriptcollection_p.h"
 
+#include "qwebenginebrowsercontext_p.h"
+#include "qtwebenginecoreglobal.h"
 #include "browser_context_adapter.h"
-#include <qtwebenginecoreglobal.h>
 #include "visited_links_manager_qt.h"
 #include "web_engine_settings.h"
 
@@ -142,32 +143,15 @@ using QtWebEngineCore::BrowserContextAdapter;
   will be deleted immediately after the signal emission.
   This signal cannot be used with a queued connection.
 
-  \sa QWebEngineDownloadItem
+  \sa QWebEngineDownloadItem, QWebEnginePage::download()
 */
-
-QWebEngineBrowserContext::QWebEngineBrowserContext(QSharedPointer<QtWebEngineCore::BrowserContextAdapter> browserContext, QWebEngineProfilePrivate *profile)
-    : QObject(BrowserContextAdapter::globalQObjectRoot())
-    , browserContextRef(browserContext)
-    , m_profile(profile)
-{
-    browserContextRef->addClient(m_profile);
-}
-
-QWebEngineBrowserContext::~QWebEngineBrowserContext()
-{
-    Q_ASSERT(m_profile);
-    // In the case the user sets this profile as the parent of the interceptor
-    // it can be deleted before the browser-context still referencing it is.
-    browserContextRef->setRequestInterceptor(nullptr);
-    browserContextRef->removeClient(m_profile);
-}
 
 QWebEngineProfilePrivate::QWebEngineProfilePrivate(QSharedPointer<QtWebEngineCore::BrowserContextAdapter> browserContext)
         : m_settings(new QWebEngineSettings())
         , m_scriptCollection(new QWebEngineScriptCollection(new QWebEngineScriptCollectionPrivate(browserContext->userResourceController())))
         , m_browserContext(new QWebEngineBrowserContext(browserContext, this))
 {
-    m_settings->d_ptr->initDefaults(browserContext->isOffTheRecord());
+    m_settings->d_ptr->initDefaults();
 }
 
 QWebEngineProfilePrivate::~QWebEngineProfilePrivate()
@@ -181,16 +165,13 @@ QWebEngineProfilePrivate::~QWebEngineProfilePrivate()
     }
 
     m_ongoingDownloads.clear();
+    if (m_browserContext)
+        m_browserContext->shutdown();
 }
 
 QSharedPointer<QtWebEngineCore::BrowserContextAdapter> QWebEngineProfilePrivate::browserContext() const
 {
-    return m_browserContext->browserContextRef;
-}
-
-void QWebEngineProfilePrivate::cancelDownload(quint32 downloadId)
-{
-    browserContext()->cancelDownload(downloadId);
+    return m_browserContext ? m_browserContext->browserContextRef : nullptr;
 }
 
 void QWebEngineProfilePrivate::downloadDestroyed(quint32 downloadId)
@@ -594,34 +575,8 @@ QWebEngineProfile *QWebEngineProfile::defaultProfile()
     For example, the language \c en-US will load the \c en-US.bdic
     dictionary file.
 
-    Qt WebEngine checks for the \c qtwebengine_dictionaries subdirectory
-    first in the local directory and if it is not found, in the Qt
-    installation directory.
-
-    On macOS, depending on how Qt WebEngine is configured at build time, there are two possibilities
-    how spellchecking data is found:
-
-    \list
-        \li Hunspell dictionaries (default) - .bdic dictionaries are used, just like on other
-            platforms
-        \li Native dictionaries - the macOS spellchecking APIs are used (which means the results
-            will depend on the installed OS dictionaries)
-    \endlist
-
-    Thus, in the macOS Hunspell case, Qt WebEngine will look in the \e qtwebengine_dictionaries
-    subdirectory located inside the application bundle \c Resources directory, and also in the
-    \c Resources directory located inside the Qt framework bundle.
-
-    To summarize, in case of Hunspell usage, the following paths are considered:
-
-    \list
-        \li QCoreApplication::applicationDirPath()/qtwebengine_dictionaries
-            or QCoreApplication::applicationDirPath()/../Contents/Resources/qtwebengine_dictionaries
-            (on macOS)
-        \li [QLibraryInfo::DataPath]/qtwebengine_dictionaries
-            or path/to/QtWebEngineCore.framework/Resources/qtwebengine_dictionaries (Qt framework
-            bundle on macOS)
-    \endlist
+    See the \l {Spellchecker}{Spellchecker feature documentation} for how
+    dictionary files are searched.
 
     For more information about how to compile \c .bdic dictionaries, see the
     \l{WebEngine Widgets Spellchecker Example}{Spellchecker Example}.
@@ -694,7 +649,8 @@ static bool checkInternalScheme(const QByteArray &scheme)
     static QSet<QByteArray> internalSchemes;
     if (internalSchemes.isEmpty()) {
         internalSchemes << QByteArrayLiteral("qrc") << QByteArrayLiteral("data") << QByteArrayLiteral("blob")
-                        << QByteArrayLiteral("http") << QByteArrayLiteral("ftp") << QByteArrayLiteral("javascript");
+                        << QByteArrayLiteral("http") << QByteArrayLiteral("https") << QByteArrayLiteral("ftp")
+                        << QByteArrayLiteral("javascript");
     }
     return internalSchemes.contains(scheme);
 }

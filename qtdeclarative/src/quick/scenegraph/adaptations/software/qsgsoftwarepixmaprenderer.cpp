@@ -64,7 +64,7 @@ void QSGSoftwarePixmapRenderer::renderScene(uint)
     class B : public QSGBindable
     {
     public:
-        void bind() const { }
+        void bind() const override { }
     } bindable;
     QSGRenderer::renderScene(bindable);
 }
@@ -79,7 +79,7 @@ void QSGSoftwarePixmapRenderer::render(QPaintDevice *target)
     QElapsedTimer renderTimer;
 
     // Setup background item
-    setBackgroundSize(QSize(target->width(), target->height()));
+    setBackgroundRect(m_projectionRect);
     setBackgroundColor(clearColor());
 
     renderTimer.start();

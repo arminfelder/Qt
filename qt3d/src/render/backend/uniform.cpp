@@ -225,10 +225,32 @@ UniformValue UniformValue::fromVariant(const QVariant &variant)
         break;
     }
 
-    default:
+    default: {
+        if (variant.userType() == qMetaTypeId<QMatrix3x3>()) {
+            const QMatrix3x3 mat33 = variant.value<QMatrix3x3>();
+            // Use constData because we want column-major layout
+            v.m_data.resize(9);
+            memcpy(v.data<float>(), mat33.constData(), 9 * sizeof(float));
+            break;
+        }
         qWarning() << "Unknown uniform type or value:" << variant << "Please check your QParameters";
     }
+    }
     return v;
+}
+
+template<>
+void UniformValue::setData<QMatrix4x4>(const QVector<QMatrix4x4> &v)
+{
+    m_data.resize(16 * v.size());
+    m_valueType = ScalarValue;
+    int offset = 0;
+    const int byteSize = 16 * sizeof(float);
+    float *data = m_data.data();
+    for (const auto m : v) {
+        memcpy(data + offset, m.constData(), byteSize);
+        offset += 16;
+    }
 }
 
 } // namespace Render

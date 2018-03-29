@@ -152,6 +152,18 @@ public:
         memcpy(m_data.data(), mat44.constData(), 16 * sizeof(float));
     }
 
+    UniformValue(const QVector<QMatrix4x4> &v)
+        : m_data(16 * v.size())
+    {
+        int offset = 0;
+        const int byteSize = 16 * sizeof(float);
+        float *data = m_data.data();
+        for (const auto m : v) {
+            memcpy(data + offset, m.constData(), byteSize);
+            offset += 16;
+        }
+    }
+
     // For nodes which will later be replaced by a Texture or Buffer
     UniformValue(Qt3DCore::QNodeId id)
         : UniformValue()
@@ -171,7 +183,18 @@ public:
     ValueType valueType() const { return m_valueType; }
     UniformType storedType() const { return m_storedType; }
 
+    template<typename T>
+    void setData(const QVector<T> &v)
+    {
+        m_data.resize(v.size() * sizeof(T) / sizeof(float));
+        m_valueType = ScalarValue;
+        float *data = m_data.data();
+        memcpy(data, v.constData(), v.size() * sizeof(T));
+    }
+
     static UniformValue fromVariant(const QVariant &variant);
+
+    int byteSize() const { return m_data.size() * sizeof(float); }
 
     template<typename T>
     const T *constData() const
@@ -204,6 +227,9 @@ private:
     // TODO: Replace this hack see QTBUG-57510
     UniformType m_storedType = Unknown;
 };
+
+template<>
+Q_AUTOTEST_EXPORT void UniformValue::setData<QMatrix4x4>(const QVector<QMatrix4x4> &v);
 
 } // namespace Render
 } // namespace Qt3DRender

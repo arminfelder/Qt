@@ -56,7 +56,6 @@
 #include <Qt3DRender/private/handle_types_p.h>
 #include <Qt3DRender/private/qboundingvolumeprovider_p.h>
 #include <Qt3DRender/private/qcollisionqueryresult_p.h>
-#include <Qt3DRender/private/pickboundingvolumeutils_p.h>
 #include <Qt3DRender/qpickevent.h>
 #include <QMouseEvent>
 #include <QKeyEvent>
@@ -75,6 +74,10 @@ class Entity;
 class Renderer;
 class NodeManagers;
 class RenderSettings;
+
+namespace PickingUtils {
+typedef QVector<RayCasting::QCollisionQueryResult::Hit> HitList;
+}
 
 class Q_AUTOTEST_EXPORT PickBoundingVolumeJob : public Qt3DCore::QAspectJob
 {
@@ -102,11 +105,11 @@ public:
 
 protected:
     void run() Q_DECL_FINAL;
-    void dispatchPickEvents(const QMouseEvent &event, const PickingUtils::CollisionVisitor::HitList &sphereHits,
+    void dispatchPickEvents(const QMouseEvent &event,
+                            const PickingUtils::HitList &sphereHits,
                             QPickEvent::Buttons eventButton,
                             int eventButtons,
                             int eventModifiers,
-                            bool trianglePickingRequested,
                             bool allHitsRequested);
 
 private:
@@ -121,9 +124,6 @@ private:
 
     QList<QKeyEvent> m_pendingKeyEvents;
 
-    void viewMatrixForCamera(Qt3DCore::QNodeId cameraId,
-                             QMatrix4x4 &viewMatrix,
-                             QMatrix4x4 &projectionMatrix) const;
     QRect windowViewport(const QSize &area, const QRectF &relativeViewport) const;
     RayCasting::QRay3D rayForViewportAndCamera(const QSize &area,
                                                const QPoint &pos,

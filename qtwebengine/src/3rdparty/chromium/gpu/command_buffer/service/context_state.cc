@@ -221,7 +221,6 @@ ContextState::ContextState(FeatureInfo* feature_info,
       pack_reverse_row_order(false),
       ignore_cached_state(false),
       fbo_binding_for_scissor_workaround_dirty(false),
-      framebuffer_srgb_(false),
       feature_info_(feature_info),
       error_state_(ErrorState::Create(error_state_client, logger)) {
   Initialize();
@@ -279,6 +278,23 @@ void ContextState::RestoreTextureUnitBindings(
   }
   if (bind_texture_arb) {
     glBindTexture(GL_TEXTURE_RECTANGLE_ARB, service_id_arb);
+  }
+}
+
+void ContextState::RestoreSamplerBinding(GLuint unit,
+                                         const ContextState* prev_state) const {
+  if (!feature_info_->IsES3Capable())
+    return;
+  const scoped_refptr<Sampler>& cur_sampler = sampler_units[unit];
+  GLuint cur_id = cur_sampler ? cur_sampler->service_id() : 0;
+  GLuint prev_id = 0;
+  if (prev_state) {
+    const scoped_refptr<Sampler>& prev_sampler =
+        prev_state->sampler_units[unit];
+    prev_id = prev_sampler ? prev_sampler->service_id() : 0;
+  }
+  if (!prev_state || cur_id != prev_id) {
+    glBindSampler(unit, cur_id);
   }
 }
 
@@ -370,11 +386,12 @@ void ContextState::RestoreActiveTexture() const {
   glActiveTexture(GL_TEXTURE0 + active_texture_unit);
 }
 
-void ContextState::RestoreAllTextureUnitBindings(
+void ContextState::RestoreAllTextureUnitAndSamplerBindings(
     const ContextState* prev_state) const {
   // Restore Texture state.
   for (size_t ii = 0; ii < texture_units.size(); ++ii) {
     RestoreTextureUnitBindings(ii, prev_state);
+    RestoreSamplerBinding(ii, prev_state);
   }
   RestoreActiveTexture();
 }
@@ -497,23 +514,20 @@ void ContextState::RestoreGlobalState(const ContextState* prev_state) const {
 }
 
 void ContextState::RestoreState(const ContextState* prev_state) {
-  RestoreAllTextureUnitBindings(prev_state);
+  RestoreAllTextureUnitAndSamplerBindings(prev_state);
   RestoreVertexAttribs();
+  // RestoreIndexedUniformBufferBindings must be called before
+  // RestoreBufferBindings. This is because setting the indexed uniform buffer
+  // bindings via glBindBuffer{Base,Range} also sets the general uniform buffer
+  // bindings (glBindBuffer), but not vice versa.
+  RestoreIndexedUniformBufferBindings(prev_state);
   RestoreBufferBindings();
   RestoreRenderbufferBindings();
   RestoreProgramSettings(prev_state, true);
-  RestoreIndexedUniformBufferBindings(prev_state);
   RestoreGlobalState(prev_state);
 
-  if (!prev_state) {
-    if (feature_info_->feature_flags().desktop_srgb_support) {
-      framebuffer_srgb_ = false;
-      glDisable(GL_FRAMEBUFFER_SRGB);
-    }
-  } else if (framebuffer_srgb_ != prev_state->framebuffer_srgb_) {
-    // FRAMEBUFFER_SRGB will be restored lazily at render time.
-    framebuffer_srgb_ = prev_state->framebuffer_srgb_;
-  }
+  // FRAMEBUFFER_SRGB will be restored lazily at render time.
+  framebuffer_srgb_valid_ = false;
 }
 
 ErrorState* ContextState::GetErrorState() {
@@ -706,10 +720,11 @@ PixelStoreParams ContextState::GetUnpackParams(Dimension dimension) {
 }
 
 void ContextState::EnableDisableFramebufferSRGB(bool enable) {
-  if (framebuffer_srgb_ == enable)
+  if (framebuffer_srgb_valid_ && framebuffer_srgb_ == enable)
     return;
   EnableDisable(GL_FRAMEBUFFER_SRGB, enable);
   framebuffer_srgb_ = enable;
+  framebuffer_srgb_valid_ = true;
 }
 
 void ContextState::InitStateManual(const ContextState*) const {

@@ -83,12 +83,14 @@ public:
 
     Q_DECLARE_PUBLIC(QRenderAspect)
 
+    static QRenderAspectPrivate* findPrivate(Qt3DCore::QAspectEngine *engine);
+
     void registerBackendTypes();
     void unregisterBackendTypes();
     void loadSceneParsers();
     void loadRenderPlugin(const QString &pluginName);
     void renderInitialize(QOpenGLContext *context);
-    void renderSynchronous();
+    void renderSynchronous(bool blocking = false);
     void renderShutdown();
     void registerBackendType(const QMetaObject &, const Qt3DCore::QBackendNodeMapperPtr &functor);
     QVector<Qt3DCore::QAspectJobPtr> createGeometryRendererJobs();

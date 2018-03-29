@@ -224,11 +224,10 @@ static bool deduce_pts_conics(const uint8_t verbs[], int vCount, int* ptCountPtr
 }
 
 SkPathRef* SkPathRef::CreateFromBuffer(SkRBuffer* buffer) {
-    SkPathRef* ref = new SkPathRef;
+    std::unique_ptr<SkPathRef> ref(new SkPathRef);
 
     int32_t packed;
     if (!buffer->readS32(&packed)) {
-        delete ref;
         return nullptr;
     }
 
@@ -236,6 +235,10 @@ SkPathRef* SkPathRef::CreateFromBuffer(SkRBuffer* buffer) {
     uint8_t segmentMask = (packed >> kSegmentMask_SerializationShift) & 0xF;
     bool isOval  = (packed >> kIsOval_SerializationShift) & 1;
     bool isRRect  = (packed >> kIsRRect_SerializationShift) & 1;
+    if (isOval && isRRect) {
+        // Fuzzing generates data with both oval and rrect flags set; abort early in this case/
+        return nullptr;
+    }
     bool rrectOrOvalIsCCW = (packed >> kRRectOrOvalIsCCW_SerializationShift) & 1;
     unsigned rrectOrOvalStartIdx = (packed >> kRRectOrOvalStartIdx_SerializationShift) & 0x7;
 
@@ -252,7 +255,6 @@ SkPathRef* SkPathRef::CreateFromBuffer(SkRBuffer* buffer) {
             static_cast<size_t>(maxPtrDiff) ||
         !buffer->readS32(&conicCount) ||
         conicCount < 0) {
-        delete ref;
         return nullptr;
     }
 
@@ -265,21 +267,19 @@ SkPathRef* SkPathRef::CreateFromBuffer(SkRBuffer* buffer) {
         !buffer->read(ref->fPoints, pointCount * sizeof(SkPoint)) ||
         !buffer->read(ref->fConicWeights.begin(), conicCount * sizeof(SkScalar)) ||
         !buffer->read(&ref->fBounds, sizeof(SkRect))) {
-        delete ref;
         return nullptr;
     }
+
     // Check that the verbs are valid, and imply the correct number of pts and conics
     {
         int pCount, cCount;
         if (!deduce_pts_conics(ref->verbsMemBegin(), ref->countVerbs(), &pCount, &cCount) ||
             pCount != ref->countPoints() || cCount != ref->fConicWeights.count()) {
-            delete ref;
             return nullptr;
         }
         // Check that the bounds match the serialized bounds.
         SkRect bounds;
         if (ComputePtBounds(&bounds, *ref) != SkToBool(ref->fIsFinite) || bounds != ref->fBounds) {
-            delete ref;
             return nullptr;
         }
     }
@@ -292,7 +292,7 @@ SkPathRef* SkPathRef::CreateFromBuffer(SkRBuffer* buffer) {
     ref->fIsRRect = isRRect;
     ref->fRRectOrOvalIsCCW = rrectOrOvalIsCCW;
     ref->fRRectOrOvalStartIdx = rrectOrOvalStartIdx;
-    return ref;
+    return ref.release();
 }
 
 void SkPathRef::Rewind(sk_sp<SkPathRef>* pathRef) {

@@ -123,7 +123,9 @@ TestCase {
                 return child;
             }
 
-            return findView(child);
+            var grandChild = findView(child);
+            if (grandChild)
+                return grandChild;
         }
 
         return null;
@@ -287,11 +289,10 @@ TestCase {
         compare(tumblerView.currentIndex, data.currentIndex);
         compare(tumblerView.currentItem.text, data.currentIndex.toString());
 
-        var fuzz = 1;
         if (data.wrap) {
-            fuzzyCompare(tumblerView.offset, data.currentIndex > 0 ? tumblerView.count - data.currentIndex : 0, fuzz);
+            tryCompare(tumblerView, "offset", data.currentIndex > 0 ? tumblerView.count - data.currentIndex : 0);
         } else {
-            fuzzyCompare(tumblerView.contentY, tumblerDelegateHeight * data.currentIndex - tumblerView.preferredHighlightBegin, fuzz);
+            tryCompare(tumblerView, "contentY", tumblerDelegateHeight * data.currentIndex - tumblerView.preferredHighlightBegin);
         }
     }
 
@@ -348,6 +349,7 @@ TestCase {
         verify(firstItem);
         // Test QTBUG-40298.
         actualPos = testCase.mapFromItem(firstItem, 0, 0);
+        tryCompare(tumbler, "moving", false);
         fuzzyCompare(actualPos.x, tumbler.leftPadding, 0.0001);
         fuzzyCompare(actualPos.y, tumbler.topPadding, 0.0001);
 
@@ -680,6 +682,17 @@ TestCase {
         compare(tumbler.currentIndex, 3);
     }
 
+    function findFirstDelegateWithText(view, text) {
+        var delegate = null;
+        var contentItem = view.hasOwnProperty("contentItem") ? view.contentItem : view;
+        for (var i = 0; i < contentItem.children.length && !delegate; ++i) {
+            var child = contentItem.children[i];
+            if (child.hasOwnProperty("text") && child.text === text)
+                delegate = child;
+        }
+        return delegate;
+    }
+
     function test_customContentItemAfterConstruction_data() {
         return [
             { tag: "ListView", componentPath: "TumblerListView.qml" },
@@ -704,6 +717,11 @@ TestCase {
         compare(tumbler.count, 5);
         tumblerView = findView(tumbler);
         compare(tumblerView.currentIndex, 2);
+
+        var delegate = findFirstDelegateWithText(tumblerView, "Custom2");
+        verify(delegate);
+        compare(delegate.height, defaultImplicitDelegateHeight);
+        tryCompare(delegate.Tumbler, "displacement", 0);
 
         tumblerView.incrementCurrentIndex();
         compare(tumblerView.currentIndex, 3);

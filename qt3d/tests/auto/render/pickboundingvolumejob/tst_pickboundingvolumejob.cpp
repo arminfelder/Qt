@@ -46,6 +46,7 @@
 #include <Qt3DRender/qrenderaspect.h>
 #include <Qt3DRender/private/qrenderaspect_p.h>
 #include <Qt3DRender/private/pickboundingvolumejob_p.h>
+#include <Qt3DRender/private/pickboundingvolumeutils_p.h>
 #include <Qt3DRender/private/updatemeshtrianglelistjob_p.h>
 #include <Qt3DRender/private/updateworldboundingvolumejob_p.h>
 #include <Qt3DRender/private/updateworldtransformjob_p.h>
@@ -55,6 +56,8 @@
 #include <Qt3DRender/private/loadbufferjob_p.h>
 #include <Qt3DRender/private/buffermanager_p.h>
 #include <Qt3DRender/private/geometryrenderermanager_p.h>
+
+#include <private/qpickevent_p.h>
 
 QT_BEGIN_NAMESPACE
 
@@ -774,6 +777,7 @@ private Q_SLOTS:
         QCOMPARE(change->propertyName(), "pressed");
         Qt3DRender::QPickEventPtr pickEvent = change->value().value<Qt3DRender::QPickEventPtr>();
         QVERIFY(pickEvent);
+        QVERIFY(!Qt3DRender::QPickEventPrivate::get(pickEvent.data())->m_entity.isNull());
         if (pickMethod == Qt3DRender::QPickingSettings::TrianglePicking)
             QVERIFY(pickEvent.dynamicCast<Qt3DRender::QPickTriangleEvent>());
 
@@ -793,6 +797,7 @@ private Q_SLOTS:
         QCOMPARE(change->propertyName(), "moved");
         pickEvent = change->value().value<Qt3DRender::QPickEventPtr>();
         QVERIFY(pickEvent);
+        QVERIFY(!Qt3DRender::QPickEventPrivate::get(pickEvent.data())->m_entity.isNull());
         if (pickMethod == Qt3DRender::QPickingSettings::TrianglePicking)
             QVERIFY(pickEvent.dynamicCast<Qt3DRender::QPickTriangleEvent>());
 
@@ -812,12 +817,14 @@ private Q_SLOTS:
         QCOMPARE(change->propertyName(), "released");
         pickEvent = change->value().value<Qt3DRender::QPickEventPtr>();
         QVERIFY(pickEvent);
+        QVERIFY(!Qt3DRender::QPickEventPrivate::get(pickEvent.data())->m_entity.isNull());
         if (pickMethod == Qt3DRender::QPickingSettings::TrianglePicking)
             QVERIFY(pickEvent.dynamicCast<Qt3DRender::QPickTriangleEvent>());
         change = arbiter.events.last().staticCast<Qt3DCore::QPropertyUpdatedChange>();
         QCOMPARE(change->propertyName(), "clicked");
         pickEvent = change->value().value<Qt3DRender::QPickEventPtr>();
         QVERIFY(pickEvent);
+        QVERIFY(!Qt3DRender::QPickEventPrivate::get(pickEvent.data())->m_entity.isNull());
         if (pickMethod == Qt3DRender::QPickingSettings::TrianglePicking)
             QVERIFY(pickEvent.dynamicCast<Qt3DRender::QPickTriangleEvent>());
 

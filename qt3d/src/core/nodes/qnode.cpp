@@ -74,6 +74,7 @@ QNodePrivate::QNodePrivate()
     , m_blockNotifications(false)
     , m_hasBackendNode(false)
     , m_enabled(true)
+    , m_notifiedParent(false)
     , m_defaultPropertyTrackMode(QNode::TrackFinalValues)
     , m_propertyChangesSetup(false)
     , m_signals(this)
@@ -173,10 +174,20 @@ void QNodePrivate::_q_postConstructorInit()
 {
     Q_Q(QNode);
 
+    // If we've already done the work then bail out. This can happen if the
+    // user creates a QNode subclass with an explicit parent, then immediately
+    // sets the new QNode as a property on another node. In this case, the
+    // property setter will call this function directly, but as we can't
+    // un-schedule a deferred invocation, this function will be called again
+    // the next time the event loop spins. So, catch this case and abort.
+    if (m_hasBackendNode)
+        return;
+
     // Check that the parent hasn't been unset since this call was enqueued
     auto parentNode = q->parentNode();
     if (!parentNode)
         return;
+
 
     if (m_scene)
         m_scene->addObservable(q); // Sets the m_changeArbiter to that of the scene
@@ -200,13 +211,19 @@ void QNodePrivate::_q_addChild(QNode *childNode)
     Q_ASSERT(childNode);
     Q_ASSERT_X(childNode->parent() == q_func(), Q_FUNC_INFO,  "not a child of this node");
 
+    // Have we already notified the parent about its new child? If so, bail out
+    // early so that we do not send more than one new child event to the backend
+    QNodePrivate *childD = QNodePrivate::get(childNode);
+    if (childD->m_notifiedParent == true)
+        return;
+
     // Store our id as the parentId in the child so that even if the child gets
     // removed from the scene as part of the destruction of the parent, when the
     // parent's children are deleted in the QObject dtor, we still have access to
     // the parentId. If we didn't store this, we wouldn't have access at that time
     // because the parent would then only be a QObject, the QNode part would have
     // been destroyed already.
-    QNodePrivate::get(childNode)->m_parentId = m_id;
+    childD->m_parentId = m_id;
 
     if (!m_scene)
         return;
@@ -214,6 +231,11 @@ void QNodePrivate::_q_addChild(QNode *childNode)
     // We need to send a QPropertyNodeAddedChange to the backend
     // to notify the backend that we have a new child
     if (m_changeArbiter != nullptr) {
+        // Flag that we have notified the parent. We do this immediately before
+        // creating the change because that recurses back into this function and
+        // we need to catch that to avoid sending more than one new child event
+        // to the backend.
+        childD->m_notifiedParent = true;
         const auto change = QPropertyNodeAddedChangePtr::create(m_id, childNode);
         change->setPropertyName("children");
         notifyObservers(change);
@@ -288,6 +310,9 @@ void QNodePrivate::_q_setParentHelper(QNode *parent)
         if (!parent)
             notifyDestructionChangesAndRemoveFromScene();
     }
+
+    // Flag that we need to notify any new parent
+    m_notifiedParent = false;
 
     // Basically QObject::setParent but for QObjectPrivate
     QObjectPrivate::setParent_helper(parent);
@@ -369,7 +394,18 @@ void QNodePrivate::propertyChanged(int propertyIndex)
 
     const QVariant data = property.read(q);
     if (data.canConvert<QNode*>()) {
-        const QNode * const node = data.value<QNode*>();
+        QNode *node = data.value<QNode*>();
+
+        // Ensure the node has issued a node creation change. We can end
+        // up here if a newly created node with a parent is immediately set
+        // as a property on another node. In this case the deferred call to
+        // _q_postConstructorInit() will not have happened yet as the event
+        // loop will still be blocked. So force it here and we catch this
+        // eventuality in the _q_postConstructorInit() function so that we
+        // do not repeat the creation and new child scene change events.
+        if (node)
+            QNodePrivate::get(node)->_q_postConstructorInit();
+
         const QNodeId id = node ? node->id() : QNodeId();
         notifyPropertyChange(property.name(), QVariant::fromValue(id));
     } else {
@@ -901,6 +937,51 @@ QNodeCreatedChangeBasePtr QNode::createNodeCreationChange() const
     // qDebug() << Q_FUNC_INFO << mo->className();
     return QNodeCreatedChangeBasePtr::create(this);
 }
+
+/*!
+ * \brief Sends a command messages to the backend node
+ *
+ * Creates a QNodeCommand message and dispatches it to the backend node. The
+ * command is given and a \a name and some \a data which can be used in the
+ * backend node to performe various operations.
+ * This returns a CommandId which can be used to identify the initial command
+ * when receiving a message in reply. If the command message is to be sent in
+ * reply to another command, \a replyTo contains the id of that command.
+ *
+ * \sa QNodeCommand, QNode::sendReply
+ */
+QNodeCommand::CommandId QNode::sendCommand(const QString &name,
+                                           const QVariant &data,
+                                           QNodeCommand::CommandId replyTo)
+{
+    Q_D(QNode);
+
+    // Bail out early if we can to avoid operator new
+    if (d->m_blockNotifications)
+        return QNodeCommand::CommandId(0);
+
+    auto e = QNodeCommandPtr::create(d->m_id);
+    e->setName(name);
+    e->setData(data);
+    e->setReplyToCommandId(replyTo);
+    d->notifyObservers(e);
+    return e->commandId();
+}
+
+/*!
+ * \brief Send a command back to the backend node
+ *
+ * Assumes the command is to be to sent back in reply to itself to the backend node
+ *
+ * \sa QNodeCommand, QNode::sendCommand
+ */
+void QNode::sendReply(const QNodeCommandPtr &command)
+{
+    Q_D(QNode);
+    command->setDeliveryFlags(QSceneChange::BackendNodes);
+    d->notifyObservers(command);
+}
+
 
 namespace {
 

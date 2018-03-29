@@ -253,13 +253,24 @@ QT_NAMESPACE_ALIAS_OBJC_CLASS(QCocoaMenuDelegate);
     return nil;
 }
 
+// Cocoa will query the menu item's target for the worksWhenModal selector.
+// So we need to implement this to allow the items to be handled correctly
+// when a modal dialog is visible.
+- (BOOL)worksWhenModal
+{
+    if (!QGuiApplication::modalWindow())
+        return YES;
+    if (auto *mb = qobject_cast<QCocoaMenuBar *>(m_menu->menuParent()))
+        return QGuiApplication::modalWindow()->handle() == mb->cocoaWindow() ? YES : NO;
+    return YES;
+}
+
 @end
 
 QT_BEGIN_NAMESPACE
 
 QCocoaMenu::QCocoaMenu() :
     m_attachedItem(0),
-    m_tag(0),
     m_updateTimer(0),
     m_enabled(true),
     m_parentEnabled(true),

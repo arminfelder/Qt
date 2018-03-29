@@ -58,6 +58,8 @@
 #include <private/qpickevent_p.h>
 #include <private/entity_p.h>
 #include <private/platformsurfacefilter_p.h>
+#include <private/trianglesvisitor_p.h>
+
 
 QT_BEGIN_NAMESPACE
 
@@ -121,7 +123,7 @@ Scene2D::Scene2D()
     , m_mouseEnabled(true)
     , m_renderPolicy(Qt3DRender::Quick::QScene2D::Continuous)
 {
-    renderThreadClientCount->fetchAndAddAcquire(1);
+
 }
 
 Scene2D::~Scene2D()
@@ -143,6 +145,8 @@ void Scene2D::initializeSharedObject()
                 || m_sharedObject->m_renderManager->thread() == QThread::currentThread()) {
             return;
         }
+
+        renderThreadClientCount->fetchAndAddAcquire(1);
 
         renderThread->setObjectName(QStringLiteral("Scene2D::renderThread"));
         m_renderThread = renderThread;
@@ -411,10 +415,11 @@ void Scene2D::cleanup()
         m_sharedObject->wake();
         m_sharedObject = nullptr;
     }
-
-    renderThreadClientCount->fetchAndSubAcquire(1);
-    if (renderThreadClientCount->load() == 0)
-        renderThread->quit();
+    if (m_renderThread) {
+        renderThreadClientCount->fetchAndSubAcquire(1);
+        if (renderThreadClientCount->load() == 0)
+            renderThread->quit();
+    }
 }
 
 

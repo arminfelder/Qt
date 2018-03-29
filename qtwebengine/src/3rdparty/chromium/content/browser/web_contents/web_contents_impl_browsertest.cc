@@ -4,10 +4,12 @@
 
 #include "base/macros.h"
 #include "base/run_loop.h"
+#include "base/strings/pattern.h"
 #include "base/strings/utf_string_conversions.h"
 #include "base/values.h"
 #include "build/build_config.h"
 #include "content/browser/frame_host/navigation_entry_impl.h"
+#include "content/browser/loader/resource_dispatcher_host_impl.h"
 #include "content/browser/renderer_host/render_widget_host_impl.h"
 #include "content/browser/web_contents/web_contents_impl.h"
 #include "content/browser/web_contents/web_contents_view.h"
@@ -31,6 +33,7 @@
 #include "content/public/test/test_navigation_observer.h"
 #include "content/public/test/test_utils.h"
 #include "content/shell/browser/shell.h"
+#include "content/shell/browser/shell_resource_dispatcher_host_delegate.h"
 #include "content/test/content_browser_test_utils_internal.h"
 #include "net/dns/mock_host_resolver.h"
 #include "net/test/embedded_test_server/embedded_test_server.h"
@@ -63,6 +66,12 @@ class WebContentsImplBrowserTest : public ContentBrowserTest {
   void SetUp() override {
     RenderWidgetHostImpl::DisableResizeAckCheckForTesting();
     ContentBrowserTest::SetUp();
+  }
+
+  void SetUpOnMainThread() override {
+    // Setup the server to allow serving separate sites, so we can perform
+    // cross-process navigation.
+    host_resolver()->AddRule("*", "127.0.0.1");
   }
 
  private:
@@ -158,11 +167,7 @@ class RenderViewSizeObserver : public WebContentsObserver {
     rwhv_create_size_ = rvh->GetWidget()->GetView()->GetViewBounds().size();
   }
 
-  void DidStartProvisionalLoadForFrame(
-      RenderFrameHost* render_frame_host,
-      const GURL& url,
-      bool is_error_page,
-      bool is_iframe_srcdoc) override {
+  void DidStartNavigation(NavigationHandle* navigation_handle) override {
     ResizeWebContentsView(shell_, wcv_new_size_, false);
   }
 
@@ -437,9 +442,6 @@ IN_PROC_BROWSER_TEST_F(WebContentsImplBrowserTest,
   net::HostPortPair foo_host_port;
   GURL cross_site_url;
 
-  // Setup the server to allow serving separate sites, so we can perform
-  // cross-process navigation.
-  host_resolver()->AddRule("*", "127.0.0.1");
   ASSERT_TRUE(embedded_test_server()->Start());
 
   foo_host_port = embedded_test_server()->host_port_pair();
@@ -595,7 +597,6 @@ IN_PROC_BROWSER_TEST_F(WebContentsImplBrowserTest, LoadProgressWithFrames) {
 // a DidStopLoading.  See http://crbug.com/429399.
 IN_PROC_BROWSER_TEST_F(WebContentsImplBrowserTest,
                        LoadProgressAfterInterruptedNav) {
-  host_resolver()->AddRule("*", "127.0.0.1");
   ASSERT_TRUE(embedded_test_server()->Start());
 
   // Start at a real page.
@@ -694,7 +695,7 @@ class WebDisplayModeDelegate : public WebContentsDelegate {
 
 IN_PROC_BROWSER_TEST_F(WebContentsImplBrowserTest, ChangeDisplayMode) {
   ASSERT_TRUE(embedded_test_server()->Start());
-  WebDisplayModeDelegate delegate(blink::WebDisplayModeMinimalUi);
+  WebDisplayModeDelegate delegate(blink::kWebDisplayModeMinimalUi);
   shell()->web_contents()->SetDelegate(&delegate);
 
   NavigateToURL(shell(), GURL("about://blank"));
@@ -705,7 +706,7 @@ IN_PROC_BROWSER_TEST_F(WebContentsImplBrowserTest, ChangeDisplayMode) {
                             " minimal-ui)').matches"));
   EXPECT_EQ(base::ASCIIToUTF16("true"), shell()->web_contents()->GetTitle());
 
-  delegate.set_mode(blink::WebDisplayModeFullscreen);
+  delegate.set_mode(blink::kWebDisplayModeFullscreen);
   // Simulate widget is entering fullscreen (changing size is enough).
   shell()->web_contents()->GetRenderViewHost()->GetWidget()->WasResized();
 
@@ -802,7 +803,7 @@ IN_PROC_BROWSER_TEST_F(WebContentsImplBrowserTest,
                             "window.open('" + kViewSourceURL.spec() + "');"));
   Shell* new_shell = new_shell_observer.GetShell();
   WaitForLoadStop(new_shell->web_contents());
-  EXPECT_EQ("", new_shell->web_contents()->GetURL().spec());
+  EXPECT_TRUE(new_shell->web_contents()->GetURL().spec().empty());
   // No navigation should commit.
   EXPECT_FALSE(
       new_shell->web_contents()->GetController().GetLastCommittedEntry());
@@ -937,6 +938,57 @@ IN_PROC_BROWSER_TEST_F(WebContentsImplBrowserTest,
 }
 
 namespace {
+void NavigateToDataURLAndCheckForTerminationDisabler(
+    Shell* shell,
+    const std::string& html,
+    bool expect_onunload,
+    bool expect_onbeforeunload) {
+  NavigateToURL(shell, GURL("data:text/html," + html));
+  RenderFrameHostImpl* rfh =
+      static_cast<RenderFrameHostImpl*>(shell->web_contents()->GetMainFrame());
+  EXPECT_EQ(expect_onunload,
+            rfh->GetSuddenTerminationDisablerState(blink::kUnloadHandler));
+  EXPECT_EQ(expect_onbeforeunload, rfh->GetSuddenTerminationDisablerState(
+                                       blink::kBeforeUnloadHandler));
+}
+}  // namespace
+
+IN_PROC_BROWSER_TEST_F(WebContentsImplBrowserTest,
+                       SuddenTerminationDisablerNone) {
+  const std::string NO_HANDLERS_HTML = "<html><body>foo</body></html>";
+  NavigateToDataURLAndCheckForTerminationDisabler(shell(), NO_HANDLERS_HTML,
+                                                  false, false);
+}
+
+IN_PROC_BROWSER_TEST_F(WebContentsImplBrowserTest,
+                       SuddenTerminationDisablerOnUnload) {
+  const std::string UNLOAD_HTML =
+      "<html><body><script>window.onunload=function(e) {}</script>"
+      "</body></html>";
+  NavigateToDataURLAndCheckForTerminationDisabler(shell(), UNLOAD_HTML, true,
+                                                  false);
+}
+
+IN_PROC_BROWSER_TEST_F(WebContentsImplBrowserTest,
+                       SuddenTerminationDisablerOnBeforeUnload) {
+  const std::string BEFORE_UNLOAD_HTML =
+      "<html><body><script>window.onbeforeunload=function(e) {}</script>"
+      "</body></html>";
+  NavigateToDataURLAndCheckForTerminationDisabler(shell(), BEFORE_UNLOAD_HTML,
+                                                  false, true);
+}
+
+IN_PROC_BROWSER_TEST_F(WebContentsImplBrowserTest,
+                       SuddenTerminationDisablerOnUnloadAndBeforeUnload) {
+  const std::string UNLOAD_AND_BEFORE_UNLOAD_HTML =
+      "<html><body><script>window.onunload=function(e) {};"
+      "window.onbeforeunload=function(e) {}</script>"
+      "</body></html>";
+  NavigateToDataURLAndCheckForTerminationDisabler(
+      shell(), UNLOAD_AND_BEFORE_UNLOAD_HTML, true, true);
+}
+
+namespace {
 
 class TestWCDelegateForDialogsAndFullscreen : public JavaScriptDialogManager,
                                               public WebContentsDelegate {
@@ -987,7 +1039,7 @@ class TestWCDelegateForDialogsAndFullscreen : public JavaScriptDialogManager,
 
   void RunJavaScriptDialog(WebContents* web_contents,
                            const GURL& origin_url,
-                           JavaScriptMessageType javascript_message_type,
+                           JavaScriptDialogType dialog_type,
                            const base::string16& message_text,
                            const base::string16& default_prompt_text,
                            const DialogClosedCallback& callback,
@@ -1012,7 +1064,6 @@ class TestWCDelegateForDialogsAndFullscreen : public JavaScriptDialogManager,
   }
 
   void CancelDialogs(WebContents* web_contents,
-                     bool suppress_callbacks,
                      bool reset_state) override {}
 
  private:
@@ -1034,7 +1085,6 @@ IN_PROC_BROWSER_TEST_F(WebContentsImplBrowserTest,
   TestWCDelegateForDialogsAndFullscreen test_delegate;
   wc->SetDelegate(&test_delegate);
 
-  host_resolver()->AddRule("*", "127.0.0.1");
   ASSERT_TRUE(embedded_test_server()->Start());
 
   NavigateToURL(shell(),
@@ -1206,10 +1256,12 @@ class DownloadImageObserver {
 };
 
 void DownloadImageTestInternal(Shell* shell,
-                               const GURL &image_url,
-                               int expected_http_status) {
+                               const GURL& image_url,
+                               int expected_http_status,
+                               int expected_number_of_images) {
   using ::testing::_;
   using ::testing::InvokeWithoutArgs;
+  using ::testing::SizeIs;
 
   // Set up everything.
   DownloadImageObserver download_image_observer;
@@ -1218,7 +1270,8 @@ void DownloadImageTestInternal(Shell* shell,
 
   // Set up expectation and stub.
   EXPECT_CALL(download_image_observer,
-              OnFinishDownloadImage(_, expected_http_status, _, _, _));
+              OnFinishDownloadImage(_, expected_http_status, _,
+                                    SizeIs(expected_number_of_images), _));
   ON_CALL(download_image_observer, OnFinishDownloadImage(_, _, _, _, _))
       .WillByDefault(
           InvokeWithoutArgs(loop_runner.get(), &MessageLoopRunner::Quit));
@@ -1250,16 +1303,26 @@ void ExpectNoValidImageCallback(const base::Closure& quit_closure,
 IN_PROC_BROWSER_TEST_F(WebContentsImplBrowserTest,
                        DownloadImage_HttpImage) {
   ASSERT_TRUE(embedded_test_server()->Start());
-  const GURL kImageUrl =
-      embedded_test_server()->GetURL("/image.jpg");
-  DownloadImageTestInternal(shell(), kImageUrl, 200);
+  const GURL kImageUrl = embedded_test_server()->GetURL("/single_face.jpg");
+  DownloadImageTestInternal(shell(), kImageUrl, 200, 1);
 }
 
 IN_PROC_BROWSER_TEST_F(WebContentsImplBrowserTest,
                        DownloadImage_Deny_FileImage) {
+  ASSERT_TRUE(embedded_test_server()->Start());
+  shell()->LoadURL(embedded_test_server()->GetURL("/simple_page.html"));
+
+  const GURL kImageUrl = GetTestUrl("", "single_face.jpg");
+  DownloadImageTestInternal(shell(), kImageUrl, 0, 0);
+}
+
+IN_PROC_BROWSER_TEST_F(WebContentsImplBrowserTest,
+                       DownloadImage_Allow_FileImage) {
+  shell()->LoadURL(GetTestUrl("", "simple_page.html"));
+
   const GURL kImageUrl =
       GetTestUrl("", "image.jpg");
-  DownloadImageTestInternal(shell(), kImageUrl, 0);
+  DownloadImageTestInternal(shell(), kImageUrl, 0, 0);
 }
 
 IN_PROC_BROWSER_TEST_F(WebContentsImplBrowserTest, DownloadImage_NoValidImage) {
@@ -1272,6 +1335,19 @@ IN_PROC_BROWSER_TEST_F(WebContentsImplBrowserTest, DownloadImage_NoValidImage) {
       base::Bind(&ExpectNoValidImageCallback, run_loop.QuitClosure()));
 
   run_loop.Run();
+}
+
+IN_PROC_BROWSER_TEST_F(WebContentsImplBrowserTest, DownloadImage_DataImage) {
+  const GURL kImageUrl = GURL(
+      "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAUAAAAFCAYAAACNbyblAAAAHE"
+      "lEQVQI12P4//8/w38GIAXDIBKE0DHxgljNBAAO9TXL0Y4OHwAAAABJRU5ErkJggg==");
+  DownloadImageTestInternal(shell(), kImageUrl, 0, 1);
+}
+
+IN_PROC_BROWSER_TEST_F(WebContentsImplBrowserTest,
+                       DownloadImage_InvalidDataImage) {
+  const GURL kImageUrl = GURL("data:image/png;invalid");
+  DownloadImageTestInternal(shell(), kImageUrl, 0, 0);
 }
 
 class MouseLockDelegate : public WebContentsDelegate {
@@ -1287,7 +1363,6 @@ class MouseLockDelegate : public WebContentsDelegate {
 
 IN_PROC_BROWSER_TEST_F(WebContentsImplBrowserTest,
                        RenderWidgetDeletedWhileMouseLockPending) {
-  host_resolver()->AddRule("*", "127.0.0.1");
   ASSERT_TRUE(embedded_test_server()->Start());
 
   std::unique_ptr<MouseLockDelegate> delegate(new MouseLockDelegate());
@@ -1332,6 +1407,73 @@ IN_PROC_BROWSER_TEST_F(WebContentsImplBrowserTest,
                             "window.domAutomationController.send(document.body."
                             "requestPointerLock());"));
   EXPECT_TRUE(delegate.get()->request_to_lock_mouse_called_);
+}
+
+namespace {
+class TestResourceDispatcherHostDelegate
+    : public ShellResourceDispatcherHostDelegate {
+ public:
+  explicit TestResourceDispatcherHostDelegate(bool* saw_override)
+      : saw_override_(saw_override) {}
+
+  void RequestBeginning(
+      net::URLRequest* request,
+      ResourceContext* resource_context,
+      AppCacheService* appcache_service,
+      ResourceType resource_type,
+      std::vector<std::unique_ptr<ResourceThrottle>>* throttles) override {
+    CHECK(BrowserThread::CurrentlyOn(BrowserThread::IO));
+    ShellResourceDispatcherHostDelegate::RequestBeginning(
+        request, resource_context, appcache_service, resource_type, throttles);
+
+    net::HttpRequestHeaders headers = request->extra_request_headers();
+    std::string user_agent;
+    CHECK(headers.GetHeader(net::HttpRequestHeaders::kUserAgent, &user_agent));
+    if (user_agent.find("foo") != std::string::npos)
+      *saw_override_ = true;
+  }
+
+ private:
+  bool* saw_override_;
+};
+}  // namespace
+
+// Checks that user agent override string is only used when it's overridden.
+IN_PROC_BROWSER_TEST_F(WebContentsImplBrowserTest, UserAgentOverride) {
+  bool saw_override = false;
+  TestResourceDispatcherHostDelegate new_delegate(&saw_override);
+  ResourceDispatcherHostDelegate* old_delegate =
+      ResourceDispatcherHostImpl::Get()->delegate();
+  BrowserThread::PostTask(
+      BrowserThread::IO, FROM_HERE,
+      base::Bind(&ResourceDispatcherHost::SetDelegate,
+                 base::Unretained(ResourceDispatcherHostImpl::Get()),
+                 &new_delegate));
+
+  ASSERT_TRUE(embedded_test_server()->Start());
+  const GURL kUrl(embedded_test_server()->GetURL("/simple_page.html"));
+  NavigateToURL(shell(), kUrl);
+  ASSERT_FALSE(saw_override);
+
+  shell()->web_contents()->SetUserAgentOverride("foo");
+  NavigateToURL(shell(), kUrl);
+  ASSERT_FALSE(saw_override);
+
+  shell()
+      ->web_contents()
+      ->GetController()
+      .GetLastCommittedEntry()
+      ->SetIsOverridingUserAgent(true);
+  TestNavigationObserver tab_observer(shell()->web_contents(), 1);
+  shell()->web_contents()->GetController().Reload(ReloadType::NORMAL, false);
+  tab_observer.Wait();
+  ASSERT_TRUE(saw_override);
+
+  BrowserThread::PostTask(
+      BrowserThread::IO, FROM_HERE,
+      base::Bind(&ResourceDispatcherHost::SetDelegate,
+                 base::Unretained(ResourceDispatcherHostImpl::Get()),
+                 old_delegate));
 }
 
 IN_PROC_BROWSER_TEST_F(WebContentsImplBrowserTest,
@@ -1405,6 +1547,102 @@ IN_PROC_BROWSER_TEST_F(WebContentsImplBrowserTest,
 
   wc->SetDelegate(nullptr);
   wc->SetJavaScriptDialogManagerForTesting(nullptr);
+}
+
+class FormBubbleDelegate : public WebContentsDelegate {
+ public:
+  FormBubbleDelegate() = default;
+
+  void WaitUntilShown() {
+    while (!is_visible_) {
+      message_loop_runner_ = new MessageLoopRunner;
+      message_loop_runner_->Run();
+    }
+  }
+
+  void WaitUntilHidden() {
+    while (is_visible_) {
+      message_loop_runner_ = new MessageLoopRunner;
+      message_loop_runner_->Run();
+    }
+  }
+
+ private:
+  void ShowValidationMessage(WebContents* web_contents,
+                             const gfx::Rect& anchor_in_root_view,
+                             const base::string16& main_text,
+                             const base::string16& sub_text) override {
+    is_visible_ = true;
+    if (message_loop_runner_)
+      message_loop_runner_->Quit();
+  }
+
+  void HideValidationMessage(WebContents* web_contents) override {
+    is_visible_ = false;
+    if (message_loop_runner_)
+      message_loop_runner_->Quit();
+  }
+
+  bool is_visible_ = false;
+  scoped_refptr<MessageLoopRunner> message_loop_runner_;
+};
+
+IN_PROC_BROWSER_TEST_F(WebContentsImplBrowserTest,
+                       NavigationHidesFormValidationBubble) {
+  ASSERT_TRUE(embedded_test_server()->Start());
+  EXPECT_TRUE(NavigateToURL(
+      shell(), embedded_test_server()->GetURL("a.com", "/title1.html")));
+
+  // Start listening for requests to show or hide the form validation bubble.
+  WebContentsImpl* web_contents =
+      static_cast<WebContentsImpl*>(shell()->web_contents());
+  FormBubbleDelegate bubble_delegate;
+  web_contents->SetDelegate(&bubble_delegate);
+
+  // Trigger a form validation bubble and verify that the bubble is shown.
+  std::string script = R"(
+      var input_field = document.createElement('input');
+      input_field.required = true;
+      var form = document.createElement('form');
+      form.appendChild(input_field);
+      document.body.appendChild(form);
+
+      setTimeout(function() {
+              input_field.setCustomValidity('Custom validity message');
+              input_field.reportValidity();
+          },
+          0);
+      )";
+  ASSERT_TRUE(ExecuteScript(web_contents, script));
+  bubble_delegate.WaitUntilShown();
+
+  // Navigate to another page and verify that the form validation bubble is
+  // hidden.
+  EXPECT_TRUE(NavigateToURL(
+      shell(), embedded_test_server()->GetURL("b.com", "/title2.html")));
+  bubble_delegate.WaitUntilHidden();
+}
+
+IN_PROC_BROWSER_TEST_F(WebContentsImplBrowserTest,
+                       FrameDetachInCopyDoesNotCrash) {
+  ASSERT_TRUE(embedded_test_server()->Start());
+  EXPECT_TRUE(NavigateToURL(
+      shell(),
+      embedded_test_server()->GetURL("a.com", "/detach_frame_in_copy.html")));
+
+  WebContentsImpl* web_contents =
+      static_cast<WebContentsImpl*>(shell()->web_contents());
+  // Focus the child frame before sending it a copy command: the child frame
+  // will detach itself upon getting a 'copy' event.
+  ASSERT_TRUE(ExecuteScript(web_contents, "window[0].focus();"));
+  FrameTree* frame_tree = web_contents->GetFrameTree();
+  FrameTreeNode* root = frame_tree->root();
+  ASSERT_EQ(root->child_at(0), frame_tree->GetFocusedFrame());
+  shell()->web_contents()->Copy();
+
+  TitleWatcher title_watcher(web_contents, base::ASCIIToUTF16("done"));
+  base::string16 title = title_watcher.WaitAndGetTitle();
+  ASSERT_EQ(title, base::ASCIIToUTF16("done"));
 }
 
 }  // namespace content

@@ -80,8 +80,7 @@ QT_BEGIN_NAMESPACE
 */
 
 QQuickLabelPrivate::QQuickLabelPrivate()
-    : background(nullptr),
-      accessibleAttached(nullptr)
+    : background(nullptr)
 {
 #if QT_CONFIG(accessibility)
     QAccessible::installActivationObserver(this);
@@ -109,25 +108,76 @@ void QQuickLabelPrivate::resolveFont()
     inheritFont(QQuickControlPrivate::parentFont(q));
 }
 
-void QQuickLabelPrivate::inheritFont(const QFont &f)
+void QQuickLabelPrivate::inheritFont(const QFont &font)
 {
-    Q_Q(QQuickLabel);
-    QFont parentFont = font.resolve(f);
-    parentFont.resolve(font.resolve() | f.resolve());
+    QFont parentFont = extra.isAllocated() ? extra->requestedFont.resolve(font) : font;
+    parentFont.resolve(extra.isAllocated() ? extra->requestedFont.resolve() | font.resolve() : font.resolve());
 
     const QFont defaultFont = QQuickControlPrivate::themeFont(QPlatformTheme::LabelFont);
     const QFont resolvedFont = parentFont.resolve(defaultFont);
 
-    const bool changed = resolvedFont != sourceFont;
-    q->QQuickText::setFont(resolvedFont);
-    if (changed)
+    setFont_helper(resolvedFont);
+}
+
+/*!
+    \internal
+
+    Assign \a font to this control, and propagate it to all children.
+*/
+void QQuickLabelPrivate::updateFont(const QFont &font)
+{
+    Q_Q(QQuickLabel);
+    QFont oldFont = sourceFont;
+    q->QQuickText::setFont(font);
+
+    QQuickControlPrivate::updateFontRecur(q, font);
+
+    if (oldFont != font)
         emit q->fontChanged();
+}
+
+/*!
+    \internal
+
+    Determine which palette is implicitly imposed on this control by its ancestors
+    and QGuiApplication::palette, resolve this against its own palette (attributes from
+    the implicit palette are copied over). Then propagate this palette to this
+    control's children.
+*/
+void QQuickLabelPrivate::resolvePalette()
+{
+    Q_Q(QQuickLabel);
+    inheritPalette(QQuickControlPrivate::parentPalette(q));
+}
+
+void QQuickLabelPrivate::inheritPalette(const QPalette &palette)
+{
+    QPalette parentPalette = extra.isAllocated() ? extra->requestedPalette.resolve(palette) : palette;
+    parentPalette.resolve(extra.isAllocated() ? extra->requestedPalette.resolve() | palette.resolve() : palette.resolve());
+
+    const QPalette defaultPalette = QQuickControlPrivate::themePalette(QPlatformTheme::LabelPalette);
+    const QPalette resolvedPalette = parentPalette.resolve(defaultPalette);
+
+    setPalette_helper(resolvedPalette);
+}
+
+void QQuickLabelPrivate::updatePalette(const QPalette &palette)
+{
+    Q_Q(QQuickLabel);
+    QPalette oldPalette = resolvedPalette;
+    resolvedPalette = palette;
+
+    QQuickControlPrivate::updatePaletteRecur(q, palette);
+
+    if (oldPalette != palette)
+        emit q->paletteChanged();
 }
 
 void QQuickLabelPrivate::textChanged(const QString &text)
 {
 #if QT_CONFIG(accessibility)
-    if (accessibleAttached)
+    Q_Q(QQuickLabel);
+    if (QQuickAccessibleAttached *accessibleAttached = QQuickControlPrivate::accessibleAttached(q))
         accessibleAttached->setName(text);
 #else
     Q_UNUSED(text)
@@ -137,17 +187,14 @@ void QQuickLabelPrivate::textChanged(const QString &text)
 #if QT_CONFIG(accessibility)
 void QQuickLabelPrivate::accessibilityActiveChanged(bool active)
 {
-    if (accessibleAttached || !active)
+    if (!active)
         return;
 
     Q_Q(QQuickLabel);
-    accessibleAttached = qobject_cast<QQuickAccessibleAttached *>(qmlAttachedPropertiesObject<QQuickAccessibleAttached>(q, true));
-    if (accessibleAttached) {
-        accessibleAttached->setRole(accessibleRole());
-        accessibleAttached->setName(text);
-    } else {
-        qWarning() << "QQuickLabel: " << q << " QQuickAccessibleAttached object creation failed!";
-    }
+    QQuickAccessibleAttached *accessibleAttached = qobject_cast<QQuickAccessibleAttached *>(qmlAttachedPropertiesObject<QQuickAccessibleAttached>(q, true));
+    Q_ASSERT(accessibleAttached);
+    accessibleAttached->setRole(accessibleRole());
+    accessibleAttached->setName(text);
 }
 
 QAccessible::Role QQuickLabelPrivate::accessibleRole() const
@@ -191,10 +238,10 @@ QFont QQuickLabel::font() const
 void QQuickLabel::setFont(const QFont &font)
 {
     Q_D(QQuickLabel);
-    if (d->font.resolve() == font.resolve() && d->font == font)
+    if (d->extra.value().requestedFont.resolve() == font.resolve() && d->extra.value().requestedFont == font)
         return;
 
-    d->font = font;
+    d->extra.value().requestedFont = font;
     d->resolveFont();
 }
 
@@ -237,11 +284,44 @@ void QQuickLabel::setBackground(QQuickItem *background)
         emit backgroundChanged();
 }
 
+/*!
+    \since QtQuick.Controls 2.3 (Qt 5.10)
+    \qmlproperty palette QtQuick.Controls::Label::palette
+
+    This property holds the palette currently set for the label.
+
+    \sa Control::palette
+*/
+QPalette QQuickLabel::palette() const
+{
+    Q_D(const QQuickLabel);
+    QPalette palette = d->resolvedPalette;
+    if (!isEnabled())
+        palette.setCurrentColorGroup(QPalette::Disabled);
+    return palette;
+}
+
+void QQuickLabel::setPalette(const QPalette &palette)
+{
+    Q_D(QQuickLabel);
+    if (d->extra.value().requestedPalette.resolve() == palette.resolve() && d->extra.value().requestedPalette == palette)
+        return;
+
+    d->extra.value().requestedPalette = palette;
+    d->resolvePalette();
+}
+
+void QQuickLabel::resetPalette()
+{
+    setPalette(QPalette());
+}
+
 void QQuickLabel::classBegin()
 {
     Q_D(QQuickLabel);
     QQuickText::classBegin();
     d->resolveFont();
+    d->resolvePalette();
 }
 
 void QQuickLabel::componentComplete()
@@ -250,7 +330,7 @@ void QQuickLabel::componentComplete()
     d->executeBackground(true);
     QQuickText::componentComplete();
 #if QT_CONFIG(accessibility)
-    if (!d->accessibleAttached && QAccessible::isActive())
+    if (QAccessible::isActive())
         d->accessibilityActiveChanged(true);
 #endif
 }
@@ -259,8 +339,20 @@ void QQuickLabel::itemChange(QQuickItem::ItemChange change, const QQuickItem::It
 {
     Q_D(QQuickLabel);
     QQuickText::itemChange(change, value);
-    if ((change == ItemParentHasChanged && value.item) || (change == ItemSceneChange && value.window))
-        d->resolveFont();
+    switch (change) {
+    case ItemEnabledHasChanged:
+        emit paletteChanged();
+        break;
+    case ItemSceneChange:
+    case ItemParentHasChanged:
+        if ((change == ItemParentHasChanged && value.item) || (change == ItemSceneChange && value.window)) {
+            d->resolveFont();
+            d->resolvePalette();
+        }
+        break;
+    default:
+        break;
+    }
 }
 
 void QQuickLabel::geometryChanged(const QRectF &newGeometry, const QRectF &oldGeometry)

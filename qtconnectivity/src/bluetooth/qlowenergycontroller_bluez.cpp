@@ -655,9 +655,9 @@ void QLowEnergyControllerPrivate::establishL2cpClientSocket()
 
 void QLowEnergyControllerPrivate::createServicesForCentralIfRequired()
 {
-    //only enable when requested
-    //for now we use env variable to activate the feature
-    if (Q_LIKELY(!qEnvironmentVariableIsSet("QT_DEFAULT_CENTRAL_SERVICES")))
+    bool ok = false;
+    int value = qEnvironmentVariableIntValue("QT_DEFAULT_CENTRAL_SERVICES", &ok);
+    if (Q_UNLIKELY(ok && value == 0))
         return; //nothing to do
 
     //do not add the services each time we start a connection
@@ -767,6 +767,10 @@ void QLowEnergyControllerPrivate::l2cpErrorChanged(QBluetoothSocket::SocketError
     case QBluetoothSocket::NetworkError:
         setError(QLowEnergyController::NetworkError);
         qCDebug(QT_BT_BLUEZ) << "Network IO error while talking to LE device";
+        break;
+    case QBluetoothSocket::RemoteHostClosedError:
+        setError(QLowEnergyController::RemoteHostClosedError);
+        qCDebug(QT_BT_BLUEZ) << "Remote host closed the connection";
         break;
     case QBluetoothSocket::UnknownSocketError:
     case QBluetoothSocket::UnsupportedProtocolError:
@@ -1244,9 +1248,9 @@ void QLowEnergyControllerPrivate::processReply(
             } else if (!isServiceDiscoveryRun) {
                 // not encryption problem -> abort readCharacteristic()/readDescriptor() run
                 if (!descriptorHandle)
-                    emit service->error(QLowEnergyService::CharacteristicReadError);
+                    service->setError(QLowEnergyService::CharacteristicReadError);
                 else
-                    emit service->error(QLowEnergyService::DescriptorReadError);
+                    service->setError(QLowEnergyService::DescriptorReadError);
             }
         } else {
             if (!descriptorHandle)

@@ -864,7 +864,7 @@ void QQmlDelegateModelPrivate::releaseIncubator(QQDMIncubationTask *incubationTa
 
 void QQmlDelegateModelPrivate::removeCacheItem(QQmlDelegateModelItem *cacheItem)
 {
-    int cidx = m_cache.indexOf(cacheItem);
+    int cidx = m_cache.lastIndexOf(cacheItem);
     if (cidx >= 0) {
         m_compositor.clearFlags(Compositor::Cache, cidx, 1, Compositor::CacheFlag);
         m_cache.removeAt(cidx);
@@ -993,7 +993,9 @@ QObject *QQmlDelegateModelPrivate::object(Compositor::Group group, int index, QQ
             }
         }
 
-        cacheItem->incubateObject(
+        QQmlComponentPrivate *cp = QQmlComponentPrivate::get(m_delegate);
+        cp->incubateObject(
+                    cacheItem->incubationTask,
                     m_delegate,
                     m_context->engine(),
                     ctxt,
@@ -1019,11 +1021,11 @@ QObject *QQmlDelegateModelPrivate::object(Compositor::Group group, int index, QQ
 
 /*
   If asynchronous is true or the component is being loaded asynchronously due
-  to an ancestor being loaded asynchronously, item() may return 0.  In this
-  case createdItem() will be emitted when the item is available.  The item
-  at this stage does not have any references, so item() must be called again
-  to ensure a reference is held.  Any call to item() which returns a valid item
-  must be matched by a call to release() in order to destroy the item.
+  to an ancestor being loaded asynchronously, object() may return 0.  In this
+  case createdItem() will be emitted when the object is available.  The object
+  at this stage does not have any references, so object() must be called again
+  to ensure a reference is held.  Any call to object() which returns a valid object
+  must be matched by a call to release() in order to destroy the object.
 */
 QObject *QQmlDelegateModel::object(int index, QQmlIncubator::IncubationMode incubationMode)
 {
@@ -1951,29 +1953,6 @@ void QQmlDelegateModelItem::Dispose()
         model->removeCacheItem(this);
     }
     delete this;
-}
-
-/*
-    This is essentially a copy of QQmlComponent::create(); except it takes the QQmlContextData
-    arguments instead of QQmlContext which means we don't have to construct the rather weighty
-    wrapper class for every delegate item.
-*/
-void QQmlDelegateModelItem::incubateObject(
-        QQmlComponent *component,
-        QQmlEngine *engine,
-        QQmlContextData *context,
-        QQmlContextData *forContext)
-{
-    QQmlIncubatorPrivate *incubatorPriv = QQmlIncubatorPrivate::get(incubationTask);
-    QQmlEnginePrivate *enginePriv = QQmlEnginePrivate::get(engine);
-    QQmlComponentPrivate *componentPriv = QQmlComponentPrivate::get(component);
-
-    incubatorPriv->compilationUnit = componentPriv->compilationUnit;
-    incubatorPriv->enginePriv = enginePriv;
-    incubatorPriv->creator.reset(new QQmlObjectCreator(context, componentPriv->compilationUnit, componentPriv->creationContext));
-    incubatorPriv->subComponentToCreate = componentPriv->start;
-
-    enginePriv->incubate(*incubationTask, forContext);
 }
 
 void QQmlDelegateModelItem::destroyObject()

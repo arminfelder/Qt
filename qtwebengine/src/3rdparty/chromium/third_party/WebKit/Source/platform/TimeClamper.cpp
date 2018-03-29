@@ -5,25 +5,25 @@
 #include "platform/TimeClamper.h"
 
 #include "base/bit_cast.h"
-#include "wtf/Assertions.h"
-#include "wtf/CryptographicallyRandomNumber.h"
+#include "platform/wtf/Assertions.h"
+#include "platform/wtf/CryptographicallyRandomNumber.h"
 
 #include <cmath>
 
 namespace blink {
 
 TimeClamper::TimeClamper() {
-  cryptographicallyRandomValues(&secret_, sizeof(secret_));
+  CryptographicallyRandomValues(&secret_, sizeof(secret_));
 }
 
 double TimeClamper::ClampTimeResolution(double time_seconds) const {
   DCHECK_GE(time_seconds, 0);
-  double clamped_time =
-      floor(time_seconds / kResolutionSeconds) * kResolutionSeconds;
+  double interval = floor(time_seconds / kResolutionSeconds);
+  double clamped_time = interval * kResolutionSeconds;
   double tick_threshold = ThresholdFor(clamped_time);
 
   if (time_seconds >= tick_threshold)
-    return clamped_time + kResolutionSeconds;
+    return (interval + 1) * kResolutionSeconds;
   return clamped_time;
 }
 

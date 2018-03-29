@@ -50,6 +50,7 @@ The set of QML object-type attribute types is as follows:
 \li signal handler attributes
 \li method attributes
 \li attached properties and attached signal handler attributes
+\li enumeration attributes
 \endlist
 
 These attributes are discussed in detail below.
@@ -448,13 +449,38 @@ right-hand-side of the property declaration must be a valid alias reference:
 [default] property alias <name>: <alias reference>
 \endcode
 
-Unlike an ordinary property, an alias can only refer to an object, or the
-property of an object, that is within the scope of the \l{QML Object Types}
-{type} within which the alias is declared. It cannot contain arbitrary
-JavaScript expressions and it cannot refer to objects declared outside of
-the scope of its type. Also note the \e {alias reference} is not optional,
-unlike the optional default value for an ordinary property; the alias reference
-must be provided when the alias is first declared.
+Unlike an ordinary property, an alias has the following restrictions:
+
+\list
+\li It can only refer to an object, or the
+    property of an object, that is within the scope of the \l{QML Object Types}
+    {type} within which the alias is declared.
+\li It cannot contain arbitrary
+    JavaScript expressions
+\li It cannot refer to objects declared outside of
+    the scope of its type.
+\li The \e {alias reference} is not optional,
+    unlike the optional default value for an ordinary property; the alias reference
+    must be provided when the alias is first declared.
+\li It cannot refer to grouped properties; the following code will not work:
+    \code
+    property alias color: rectangle.border.color
+
+    Rectangle {
+        id: rectangle
+    }
+    \endcode
+
+    However, aliases to \l {QML Basic Types}{value type} properties do work:
+    \code
+    property alias rectX: object.rectProperty.x
+
+    Item {
+        id: object
+        property rect rectProperty
+    }
+    \endcode
+\endlist
 
 For example, below is a \c Button type with a \c buttonText aliased property
 which is connected to the \c text object of the \l Text child:
@@ -973,5 +999,42 @@ ListView {
 
 Now \c delegateItem.ListView.isCurrentItem correctly refers to the
 \c isCurrentItem attached property of the delegate.
+
+\section2 Enumeration Attributes
+
+Enumerations provide a fixed set of named choices. They can be declared in QML using the \c enum keyword:
+
+\qml
+// MyText.qml
+Text {
+    enum TextType {
+        Normal,
+        Heading
+    }
+}
+\endqml
+
+As shown above, enumeration types (e.g. \c TextType) and values (e.g. \c Normal) must begin with an uppercase letter.
+
+Values are referred to via \c {<Type>.<EnumerationType>.<Value>} or \c {<Type>.<Value>}.
+
+\qml
+// MyText.qml
+Text {
+    enum TextType {
+        Normal,
+        Heading
+    }
+
+    property int textType: MyText.TextType.Normal
+
+    font.bold: textType == MyText.TextType.Heading
+    font.pixelSize: textType == MyText.TextType.Heading ? 24 : 12
+}
+\endqml
+
+More information on enumeration usage in QML can be found in the \l {QML Basic Types} \l enumeration documentation.
+
+The ability to declare enumerations in QML was introduced in Qt 5.10.
 
 */

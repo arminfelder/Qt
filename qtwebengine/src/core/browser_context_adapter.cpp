@@ -41,6 +41,8 @@
 
 #include "content/browser/web_contents/web_contents_impl.h"
 #include "content/public/browser/browser_thread.h"
+#include "content/public/browser/browsing_data_remover.h"
+#include "content/public/browser/download_manager.h"
 
 #include "browser_context_qt.h"
 #include "content_client_qt.h"
@@ -101,9 +103,16 @@ BrowserContextAdapter::BrowserContextAdapter(const QString &storageName)
 
 BrowserContextAdapter::~BrowserContextAdapter()
 {
+    Q_ASSERT(!m_downloadManagerDelegate);
     m_browserContext->ShutdownStoragePartitions();
-    if (m_downloadManagerDelegate)
-        content::BrowserThread::DeleteSoon(content::BrowserThread::UI, FROM_HERE, m_downloadManagerDelegate.take());
+}
+
+void BrowserContextAdapter::shutdown()
+{
+    if (m_downloadManagerDelegate) {
+        m_browserContext->GetDownloadManager(m_browserContext.data())->Shutdown();
+        m_downloadManagerDelegate.reset();
+    }
     BrowserContextDependencyManager::GetInstance()->DestroyBrowserContextServices(m_browserContext.data());
 }
 
@@ -177,11 +186,23 @@ void BrowserContextAdapter::addClient(BrowserContextAdapterClient *adapterClient
 void BrowserContextAdapter::removeClient(BrowserContextAdapterClient *adapterClient)
 {
     m_clients.removeOne(adapterClient);
+    if (m_clients.isEmpty() && this != WebEngineContext::current()->m_defaultBrowserContext.data())
+        shutdown();
 }
 
 void BrowserContextAdapter::cancelDownload(quint32 downloadId)
 {
     downloadManagerDelegate()->cancelDownload(downloadId);
+}
+
+void BrowserContextAdapter::pauseDownload(quint32 downloadId)
+{
+    downloadManagerDelegate()->pauseDownload(downloadId);
+}
+
+void BrowserContextAdapter::resumeDownload(quint32 downloadId)
+{
+    downloadManagerDelegate()->resumeDownload(downloadId);
 }
 
 QSharedPointer<BrowserContextAdapter> BrowserContextAdapter::defaultContext()
@@ -490,8 +511,10 @@ void BrowserContextAdapter::setHttpAcceptLanguage(const QString &httpAcceptLangu
 
 void BrowserContextAdapter::clearHttpCache()
 {
-    if (m_browserContext->url_request_getter_.get())
-        m_browserContext->url_request_getter_->clearHttpCache();
+    content::BrowsingDataRemover *remover = content::BrowserContext::GetBrowsingDataRemover(m_browserContext.data());
+    remover->Remove(base::Time(), base::Time::Max(),
+        content::BrowsingDataRemover::DATA_TYPE_CACHE,
+        content::BrowsingDataRemover::ORIGIN_TYPE_UNPROTECTED_WEB | content::BrowsingDataRemover::ORIGIN_TYPE_PROTECTED_WEB);
 }
 
 void BrowserContextAdapter::setSpellCheckLanguages(const QStringList &languages)
